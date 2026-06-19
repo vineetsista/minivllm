@@ -134,7 +134,7 @@ Qwen3-0.6B) against the previous stage. Correctness is gated at every step.
 | 3 | KV cache | **~9×** decode throughput; latency flat (p99 4727 → 252 ms/tok) |
 | 4 | Paged KV cache | **7.8×** less KV memory, **8×** more concurrent seqs (12.9% → 100% util) |
 | 5 | Continuous batching | **~3.5×** throughput vs static (occupancy 1.5 → 3.5 of 4 slots) |
-| 6 | Fused Triton kernel | RMSNorm kernel, CUDA-gated + CPU reference (runs on a GPU box) |
+| 6 | Fused Triton kernel | RMSNorm kernel, CUDA-gated + CPU reference (validate free on a Colab T4) |
 | 7 | Speculative decoding | **~2.8×** wall-clock, 4.3× fewer target forwards (93% acceptance) |
 | 8 | Serving + load test | **~5.4×** throughput at concurrency 4 vs serialized |
 | + | int8 quantization | model **2.24×** smaller (logit cosine 0.99943) |
@@ -163,14 +163,21 @@ random-weight models, while the token-for-token gates against HuggingFace are
 auto-detected and skipped unless `--runslow`. CI runs lint + types + the fast tier
 on every push.
 
-## Hardware
+## Hardware — CPU by design
 
-Everything above is measured on a **CPU-only** laptop, which is the point: the
-*algorithmic* wins (paging, batching, speculation, quantization) show up at any
-scale. The Triton kernel executes on CUDA (a CPU-identical reference runs
-elsewhere), and the headline GPU throughput / memory figures come from a rented
-box — every technique here is hardware-agnostic and carries over. Run on GPU by
-installing the CUDA torch wheel and `pip install -e ".[gpu]"`.
+Every number above is measured on a **CPU-only** laptop, and that is the point:
+the wins here are *algorithmic* — paging, batching, speculation, quantization —
+and show up at any scale, at zero infrastructure cost. Nothing in the engine
+depends on a GPU to run or to be correct.
+
+The one GPU-specific piece, the fused Triton kernel, ships with a CPU-identical
+PyTorch reference (so the engine behaves the same everywhere) and a `pytest` gate
+that validates the kernel wherever CUDA exists. Want to see it light up for free?
+Open [`notebooks/minivllm_colab.ipynb`](notebooks/minivllm_colab.ipynb) on a free
+Colab **T4** — it runs the kernel gate and the GPU benchmarks
+(`scripts/kernel_bench.py`, `scripts/benchmark.py --device cuda`) in a couple of
+minutes, no rental required. To run the whole engine on a GPU, install the CUDA
+torch wheel and `pip install -e ".[gpu]"`.
 
 ## License
 

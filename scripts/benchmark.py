@@ -43,12 +43,13 @@ def main() -> int:
     ap.add_argument(
         "--only", choices=["naive", "cache"], default=None, help="run just one path instead of both"
     )
+    ap.add_argument("--device", default="cpu", help="cpu or cuda")
     args = ap.parse_args()
 
     from transformers import AutoTokenizer
 
-    console.print(f"[bold]Loading[/bold] {args.model} ...")
-    model, cfg = load_model(args.model)
+    console.print(f"[bold]Loading[/bold] {args.model} on {args.device} ...")
+    model, cfg = load_model(args.model, device=args.device)
     tok = AutoTokenizer.from_pretrained(args.model)
 
     params = SamplingParams(max_new_tokens=args.max_new_tokens, temperature=0.0)
@@ -74,6 +75,7 @@ def main() -> int:
                 n_runs=args.runs,
                 warmup=args.warmup,
                 use_cache=use_cache,
+                device=args.device,
                 model_id=args.model,
             )
         )
