@@ -114,6 +114,8 @@ def generate(
     params: SamplingParams | None = None,
     eos_token_id: int | list[int] | None = None,
     use_cache: bool = False,
+    paged: bool = False,
+    block_size: int = 16,
 ) -> GenerationOutput:
     """Autoregressive decode for a single sequence.
 
@@ -122,9 +124,10 @@ def generate(
 
     use_cache=False — the naive baseline: every step re-runs the model over the
     whole growing sequence (O(n^2) total).
-    use_cache=True  — Phase 3 KV cache: prefill the prompt once, then feed only
-    the new token each step and attend it against the cached history (O(n)).
-    Both paths produce identical tokens; only the work differs.
+    use_cache=True  — KV cache: prefill the prompt once, then feed only the new
+    token each step and attend it against the cached history (O(n)). `paged`
+    selects the Phase 4 paged (block-based) cache over the contiguous one; both
+    produce identical tokens.
     """
     params = params or SamplingParams()
     device = input_ids.device
@@ -132,7 +135,9 @@ def generate(
     eos_set = _normalize_eos(eos_token_id)
 
     if use_cache:
-        return _generate_cached(model, prompt_ids, params, eos_set, generator, device)
+        return _generate_cached(
+            model, prompt_ids, params, eos_set, generator, device, paged, block_size
+        )
     return _generate_naive(model, prompt_ids, params, eos_set, generator, device)
 
 
@@ -170,16 +175,21 @@ def _generate_naive(model, prompt_ids, params, eos_set, generator, device) -> Ge
     )
 
 
-def _generate_cached(model, prompt_ids, params, eos_set, generator, device) -> GenerationOutput:
-    from minivllm.cache import KVCache
-
+def _generate_cached(
+    model, prompt_ids, params, eos_set, generator, device, paged=False, block_size=16
+) -> GenerationOutput:
     dtype = next(model.parameters()).dtype
-    cache = KVCache(
-        model.cfg,
-        max_seq_len=len(prompt_ids) + params.max_new_tokens,
-        device=device,
-        dtype=dtype,
-    )
+    max_seq_len = len(prompt_ids) + params.max_new_tokens
+    if paged:
+        from minivllm.paged_cache import PagedKVCache
+
+        cache = PagedKVCache(
+            model.cfg, max_seq_len=max_seq_len, block_size=block_size, device=device, dtype=dtype
+        )
+    else:
+        from minivllm.cache import KVCache
+
+        cache = KVCache(model.cfg, max_seq_len=max_seq_len, device=device, dtype=dtype)
 
     generated: list[int] = []
     decode_seconds: list[float] = []

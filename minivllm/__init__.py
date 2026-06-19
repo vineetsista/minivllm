@@ -5,9 +5,22 @@ Surface so far:
     validated logit-for-logit against the HuggingFace reference.
   * Phase 2 — naive autoregressive generation and a benchmark harness that
     locks in the baseline (TTFT, decode latency, throughput).
+  * Phase 3 — a contiguous KV cache (O(n) decode).
+  * Phase 4 — a paged (block-based) KV cache: block allocator + per-sequence
+    block table, eliminating fragmentation behind the same cache interface.
 """
 
+from minivllm.cache import KVCache
 from minivllm.config import ModelConfig
 from minivllm.generate import GenerationOutput, SamplingParams, generate
+from minivllm.paged_cache import BlockAllocator, PagedKVCache
 
-__all__ = ["ModelConfig", "SamplingParams", "GenerationOutput", "generate"]
+__all__ = [
+    "ModelConfig",
+    "SamplingParams",
+    "GenerationOutput",
+    "generate",
+    "KVCache",
+    "PagedKVCache",
+    "BlockAllocator",
+]

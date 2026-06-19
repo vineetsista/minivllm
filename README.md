@@ -24,16 +24,19 @@ minivllm/
   loader.py       # map HF safetensors -> our modules
   validation.py   # logit-parity check vs the HF reference
   generate.py     # naive + KV-cache autoregressive decode, sampling
-  cache.py        # KVCache: contiguous per-layer K/V buffers (paged in Phase 4)
+  cache.py        # KVCache: contiguous per-layer K/V buffers
+  paged_cache.py  # BlockAllocator + PagedKVCache (PagedAttention-style)
   benchmark.py    # TTFT / decode-latency / throughput harness
 scripts/
   validate_logits.py
   generate.py     # CLI: generate text
   benchmark.py    # CLI: compare decode paths (naive vs cache)
+  paged_demo.py   # CLI: paged vs static KV memory / fragmentation / capacity
 tests/
   test_logits.py
   test_generation.py
   test_kv_cache.py
+  test_paged_cache.py
 ```
 
 Design intent: clean separation between **model**, **KV-cache manager**,
@@ -56,7 +59,7 @@ pip install -r requirements.txt
 | 1 | Correct forward pass + logit parity | ✅ |
 | 2 | Naive generation + baseline benchmark | ✅ |
 | 3 | KV cache | ✅ |
-| 4 | Paged KV cache (PagedAttention-style) | ⏳ |
+| 4 | Paged KV cache (PagedAttention-style) | ✅ |
 | 5 | Continuous (iteration-level) batching | ⏳ |
 | 6 | Custom Triton kernel | ⏳ (needs GPU) |
 | 7 | Speculative decoding | ⏳ |
@@ -163,3 +166,51 @@ flat — p50/p99 collapse from 1370/4727 ms to 168/252 ms. The naive path's huge
 p50→p99 spread *was* the O(n²) tax (later tokens re-attend over everything);
 caching removes it, so every decode step costs about the same regardless of how
 far into the sequence it is.
+
+## Phase 4 — Paged KV cache
+
+The contiguous cache gives every sequence one buffer sized to `max_seq_len`.
+Under real serving load that is brutally wasteful: a short sequence still
+reserves the maximum, and packing many different-length sequences fragments the
+pool. Paging applies the OS virtual-memory trick — physical KV is carved into
+fixed-size **blocks**, a central `BlockAllocator` hands them out and reclaims
+them, and each sequence keeps a **block table** mapping its logical positions to
+physical blocks (`paged_cache.py`). Any free block fits any sequence, so there is
+no external fragmentation; internal waste is bounded by `block_size - 1` tokens
+per sequence regardless of `max_seq_len`. This is the vLLM PagedAttention idea.
+
+Crucially it sits behind the **same `extend` / `advance` interface** as the
+contiguous cache, so `model.py` is untouched — only the storage changes.
+
+```bash
+python -m scripts.paged_demo                       # the memory win
+python -m pytest tests/test_paged_cache.py -v
+```
+
+`test_paged_cache.py` checks the allocator (alloc/free/reuse, pool sharing
+across sequences, exhaustion), proves the paged gather reproduces a contiguous
+buffer bit-for-bit, and gates that paged greedy decode == contiguous == HF,
+token-for-token (with a small block size so sequences span several blocks).
+
+### The win — memory, not single-stream speed
+
+Qwen3-0.6B is 28 layers × 8 KV heads × head_dim 128, so KV costs **112 KiB per
+token** (float16). For 64 sequences of mixed length (avg ~264 tokens) capped at
+`max_seq_len = 2048`, block size 16:
+
+| Scheme | KV memory | Utilization | Concurrent seqs in 4 GiB |
+|---|---|---|---|
+| Contiguous (static) | 14.00 GiB | 12.9% | 18 |
+| **Paged** | **1.80 GiB** | **100.0%** | **141** |
+
+**~7.8× less memory and ~8× more concurrent sequences** in a fixed budget —
+because memory now tracks tokens actually used, not the worst case reserved per
+sequence. That concurrency is the raw material Phase 5's scheduler turns into
+throughput.
+
+Honest tradeoff: on this CPU reference path, paged single-stream decode is
+~15–20% *slower* than the contiguous cache (a Python per-token scatter plus a
+per-step gather to assemble blocks for the attention math). That gather is
+exactly what the Phase 6 paged-attention kernel removes by attending over
+scattered blocks directly — paging buys the memory/concurrency now, the kernel
+buys the speed back later.
