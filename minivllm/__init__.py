@@ -20,6 +20,7 @@ from minivllm.cache import KVCache
 from minivllm.config import ModelConfig
 from minivllm.engine import ContinuousBatchingEngine, Request
 from minivllm.generate import GenerationOutput, SamplingParams, generate
+from minivllm.paged_batched_cache import PagedBatchedKVCache
 from minivllm.paged_cache import BlockAllocator, PagedKVCache
 from minivllm.speculative import NgramDrafter, SpeculativeDecoder
 
@@ -31,6 +32,7 @@ __all__ = [
     "KVCache",
     "PagedKVCache",
     "BlockAllocator",
+    "PagedBatchedKVCache",
     "ContinuousBatchingEngine",
     "Request",
     "SpeculativeDecoder",

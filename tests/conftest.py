@@ -18,8 +18,11 @@ import os
 
 import pytest
 
-# Substrings that identify the model-downloading / HF-reference gates.
-_SLOW_NAME_HINTS = ("reference", "real_model", "single_sequence")
+# Substrings that identify the model-downloading / HF-reference gates. Kept
+# precise so tiny-model tests (which may share words like "single_sequence")
+# are not caught: the real gates all compare against the HF "_reference", use
+# the "real_model", or run "both_policies" of the real-model engine.
+_SLOW_NAME_HINTS = ("_reference", "real_model", "both_policies")
 
 
 def pytest_addoption(parser):

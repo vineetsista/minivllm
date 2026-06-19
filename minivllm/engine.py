@@ -73,6 +73,9 @@ class ContinuousBatchingEngine:
         max_slots: int = 4,
         device: str = "cpu",
         eos_token_id: int | list[int] | None = None,
+        paged: bool = False,
+        block_size: int = 16,
+        num_blocks: int | None = None,
     ):
         self.model = model
         self.cfg = model.cfg
@@ -80,6 +83,26 @@ class ContinuousBatchingEngine:
         self.device = device
         self.dtype = next(model.parameters()).dtype
         self.eos = _normalize_eos(eos_token_id)
+        # paged=True backs the batched decode with a shared block pool
+        # (PagedAttention) instead of a contiguous per-slot region.
+        self.paged = paged
+        self.block_size = block_size
+        self.num_blocks = num_blocks
+
+    def _new_cache(self, max_len: int):
+        if self.paged:
+            from minivllm.paged_batched_cache import PagedBatchedKVCache
+
+            return PagedBatchedKVCache(
+                self.cfg,
+                self.max_slots,
+                max_len,
+                self.block_size,
+                self.num_blocks,
+                self.device,
+                self.dtype,
+            )
+        return BatchedKVCache(self.cfg, self.max_slots, max_len, self.device, self.dtype)
 
     @torch.no_grad()
     def _prefill(self, cache: BatchedKVCache, slot: int, req: Request, params, generator):
@@ -111,7 +134,7 @@ class ContinuousBatchingEngine:
         generator = None  # greedy in the batched path (deterministic comparison)
 
         max_len = max(len(r.prompt_ids) + r.max_new_tokens for r in requests)
-        cache = BatchedKVCache(self.cfg, self.max_slots, max_len, self.device, self.dtype)
+        cache = self._new_cache(max_len)
 
         waiting = deque(requests)
         slots: list[_Slot | None] = [None] * self.max_slots

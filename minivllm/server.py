@@ -81,6 +81,9 @@ class ServingEngine:
         max_seq_len: int = 1024,
         device: str = "cpu",
         eos_token_id: int | list[int] | None = None,
+        paged: bool = False,
+        block_size: int = 16,
+        num_blocks: int | None = None,
     ):
         self.model = model
         self.cfg = model.cfg
@@ -90,7 +93,15 @@ class ServingEngine:
         self.dtype = next(model.parameters()).dtype
         self.eos = _normalize_eos(eos_token_id)
 
-        self.cache = BatchedKVCache(self.cfg, max_slots, max_seq_len, device, self.dtype)
+        self.paged = paged
+        if paged:
+            from minivllm.paged_batched_cache import PagedBatchedKVCache
+
+            self.cache: BatchedKVCache | PagedBatchedKVCache = PagedBatchedKVCache(
+                self.cfg, max_slots, max_seq_len, block_size, num_blocks, device, self.dtype
+            )
+        else:
+            self.cache = BatchedKVCache(self.cfg, max_slots, max_seq_len, device, self.dtype)
         self.slots: list[_Slot | None] = [None] * max_slots
 
         self._waiting: deque[_ServeReq] = deque()
