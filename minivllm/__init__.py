@@ -8,10 +8,13 @@ Surface so far:
   * Phase 3 — a contiguous KV cache (O(n) decode).
   * Phase 4 — a paged (block-based) KV cache: block allocator + per-sequence
     block table, eliminating fragmentation behind the same cache interface.
+  * Phase 5 — continuous (iteration-level) batching: a batched-decode cache and
+    a scheduler that keeps the batch full instead of draining it.
 """
 
 from minivllm.cache import KVCache
 from minivllm.config import ModelConfig
+from minivllm.engine import ContinuousBatchingEngine, Request
 from minivllm.generate import GenerationOutput, SamplingParams, generate
 from minivllm.paged_cache import BlockAllocator, PagedKVCache
 
@@ -23,4 +26,6 @@ __all__ = [
     "KVCache",
     "PagedKVCache",
     "BlockAllocator",
+    "ContinuousBatchingEngine",
+    "Request",
 ]

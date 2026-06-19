@@ -26,6 +26,7 @@ from minivllm.config import ModelConfig
 from minivllm.layers import RMSNorm, RotaryEmbedding, apply_rotary_pos_emb
 
 if TYPE_CHECKING:
+    from minivllm.batched_cache import BatchedKVCache
     from minivllm.cache import KVCache
 
 
@@ -177,6 +178,29 @@ class Qwen3Model(nn.Module):
             cache.advance(s)
         return self.norm(x)
 
+    def decode_step(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        attn_mask: torch.Tensor,
+        cache: "BatchedKVCache",
+    ) -> torch.Tensor:
+        """One batched decode step over B slots (Phase 5 continuous batching).
+
+        input_ids: [B, 1] (one new token per slot). position_ids: [B, 1], each
+        the absolute position of that slot's new token. attn_mask: [B, 1, 1,
+        max_len], per-row -inf beyond that slot's valid length. The caller (the
+        engine) owns admission, sampling, and committing cache length via
+        cache.advance — kept out of here so the model stays a pure forward.
+        """
+        x = self.embed_tokens(input_ids)
+        cos, sin = self.rotary(position_ids)
+        cos = cos.to(x.dtype)
+        sin = sin.to(x.dtype)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, cos, sin, attn_mask, cache, i)
+        return self.norm(x)
+
 
 class Qwen3ForCausalLM(nn.Module):
     def __init__(self, cfg: ModelConfig):
@@ -195,3 +219,7 @@ class Qwen3ForCausalLM(nn.Module):
     ) -> torch.Tensor:
         hidden = self.model(input_ids, position_ids, cache)
         return self.lm_head(hidden)
+
+    def decode_step(self, input_ids, position_ids, attn_mask, cache) -> torch.Tensor:
+        """Batched decode logits [B, 1, vocab]. See Qwen3Model.decode_step."""
+        return self.lm_head(self.model.decode_step(input_ids, position_ids, attn_mask, cache))

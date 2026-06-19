@@ -26,17 +26,21 @@ minivllm/
   generate.py     # naive + KV-cache autoregressive decode, sampling
   cache.py        # KVCache: contiguous per-layer K/V buffers
   paged_cache.py  # BlockAllocator + PagedKVCache (PagedAttention-style)
+  batched_cache.py# BatchedKVCache: per-slot histories for batched decode
+  engine.py       # continuous-batching scheduler (static + continuous policies)
   benchmark.py    # TTFT / decode-latency / throughput harness
 scripts/
   validate_logits.py
   generate.py     # CLI: generate text
   benchmark.py    # CLI: compare decode paths (naive vs cache)
   paged_demo.py   # CLI: paged vs static KV memory / fragmentation / capacity
+  batch_bench.py  # CLI: static vs continuous batching throughput
 tests/
   test_logits.py
   test_generation.py
   test_kv_cache.py
   test_paged_cache.py
+  test_continuous_batching.py
 ```
 
 Design intent: clean separation between **model**, **KV-cache manager**,
@@ -60,7 +64,7 @@ pip install -r requirements.txt
 | 2 | Naive generation + baseline benchmark | ✅ |
 | 3 | KV cache | ✅ |
 | 4 | Paged KV cache (PagedAttention-style) | ✅ |
-| 5 | Continuous (iteration-level) batching | ⏳ |
+| 5 | Continuous (iteration-level) batching | ✅ |
 | 6 | Custom Triton kernel | ⏳ (needs GPU) |
 | 7 | Speculative decoding | ⏳ |
 | 8 | FastAPI serving + load-test dashboard | ⏳ |
@@ -214,3 +218,47 @@ per-step gather to assemble blocks for the attention math). That gather is
 exactly what the Phase 6 paged-attention kernel removes by attending over
 scattered blocks directly — paging buys the memory/concurrency now, the kernel
 buys the speed back later.
+
+## Phase 5 — Continuous (iteration-level) batching
+
+A single decode step can serve a whole batch at once, so the lever for
+throughput is *scheduling*: when do new requests join the batch? `batched_cache.py`
+keeps one `[slots, n_kv, max_len, head_dim]` buffer per layer with a per-slot
+length, masking each row to its own history — so one batched matmul decodes all
+slots (`Attention.forward` runs batched unchanged; the model gains only a
+`decode_step` entry). `engine.py` is the scheduler, with two admission policies:
+
+- **static** — admit a group of B, decode until *every* slot finishes, then
+  admit the next group. A short sequence's slot sits idle until the longest in
+  its group drains.
+- **continuous** — admit a waiting request the moment *any* slot frees, every
+  step. Slots stay full; no compute is wasted on idle rows.
+
+They share the exact same compute, so the comparison isolates the scheduler.
+Prefill is done per sequence into a temp cache and copied into a slot; decode is
+the batched part.
+
+```bash
+python -m scripts.batch_bench --slots 4 --short 8 --long 48
+python -m pytest tests/test_continuous_batching.py -v
+```
+
+`test_continuous_batching.py` gates that **both** policies reproduce, for every
+request, exactly what single-sequence greedy decode produces — batching changes
+the schedule, never the tokens.
+
+### The win
+
+12 requests, 4 slots, mixed generation lengths `[48, 8, 8, 8] × 3` (the high-
+variance case where scheduling matters), same hardware:
+
+| Policy | Wall (s) | Decode steps | Avg batch occupancy | Throughput (tok/s) |
+|---|---|---|---|---|
+| Static | 99.05 | 141 | 1.53 / 4 | 2.18 |
+| **Continuous** | **28.28** | **61** | **3.54 / 4** | **7.64** |
+
+**~3.5× throughput**, from **2.3× fewer decode steps** (141 → 61). The mechanism
+is occupancy: static averages 1.53 live slots of 4 (three short sequences finish
+and idle while a length-48 sequence drains its group); continuous refills those
+slots instantly and averages 3.54 of 4. The wider the length spread and the more
+requests, the larger the gap.
