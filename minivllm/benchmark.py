@@ -32,6 +32,7 @@ def _percentile(values: list[float], q: float) -> float:
 
 @dataclass
 class BenchmarkResult:
+    label: str  # e.g. "Naive (no cache)" or "KV cache"
     model_id: str
     device: str
     dtype: str
@@ -51,7 +52,7 @@ class BenchmarkResult:
     def as_markdown_row(self) -> str:
         """A README-pasteable row: phase, decode tok/s, TTFT, p50/p99 decode."""
         return (
-            f"| Naive (no cache) | {self.decode_tokens_per_s:.2f} | "
+            f"| {self.label} | {self.decode_tokens_per_s:.2f} | "
             f"{self.ttft_p50_s * 1000:.0f} | "
             f"{self.decode_latency_p50_ms:.1f} / {self.decode_latency_p99_ms:.1f} |"
         )
@@ -67,23 +68,26 @@ def run_benchmark(
     n_runs: int = 3,
     warmup: int = 1,
     ignore_eos: bool = True,
+    use_cache: bool = False,
+    label: str | None = None,
     device: str = "cpu",
     model_id: str = "Qwen/Qwen3-0.6B",
 ) -> BenchmarkResult:
     params = params or SamplingParams(max_new_tokens=64, temperature=0.0)
     eos = None if ignore_eos else tokenizer.eos_token_id
+    label = label or ("KV cache" if use_cache else "Naive (no cache)")
 
     input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
     prompt_tokens = int(input_ids.shape[1])
 
     for _ in range(warmup):
-        generate(model, input_ids, params, eos_token_id=eos)
+        generate(model, input_ids, params, eos_token_id=eos, use_cache=use_cache)
 
     ttfts: list[float] = []
     decode_latencies: list[float] = []  # seconds, pooled across runs
     e2e_tps: list[float] = []
     for _ in range(n_runs):
-        out = generate(model, input_ids, params, eos_token_id=eos)
+        out = generate(model, input_ids, params, eos_token_id=eos, use_cache=use_cache)
         ttfts.append(out.prefill_seconds)
         decode_latencies.extend(out.decode_seconds)
         if out.total_seconds > 0:
@@ -92,6 +96,7 @@ def run_benchmark(
     mean_decode_s = float(np.mean(decode_latencies)) if decode_latencies else float("nan")
 
     return BenchmarkResult(
+        label=label,
         model_id=model_id,
         device=device,
         dtype=str(cfg.dtype).replace("torch.", ""),

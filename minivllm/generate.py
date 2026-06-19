@@ -93,33 +93,50 @@ def _select_next_token(
     return int(torch.multinomial(probs, num_samples=1, generator=generator).item())
 
 
+def _prepare(input_ids, params, device):
+    """Shared setup: pull out the prompt ids and the (optional) RNG."""
+    if input_ids.dim() == 2:
+        if input_ids.size(0) != 1:
+            raise ValueError("generate handles batch size 1; batching lands in Phase 5")
+        prompt_ids = input_ids[0].tolist()
+    else:
+        prompt_ids = input_ids.tolist()
+    generator: torch.Generator | None = None
+    if params.seed is not None and not params.greedy:
+        generator = torch.Generator(device=device).manual_seed(params.seed)
+    return prompt_ids, generator
+
+
 @torch.no_grad()
 def generate(
     model: Qwen3ForCausalLM,
     input_ids: torch.Tensor,
     params: SamplingParams | None = None,
     eos_token_id: int | list[int] | None = None,
+    use_cache: bool = False,
 ) -> GenerationOutput:
-    """Naive (no-cache) autoregressive decode for a single sequence.
+    """Autoregressive decode for a single sequence.
 
     `input_ids` is [1, prompt_len] or [prompt_len]. Batch size > 1 is out of
-    scope for the baseline — batching arrives properly in Phase 5.
+    scope until Phase 5.
+
+    use_cache=False — the naive baseline: every step re-runs the model over the
+    whole growing sequence (O(n^2) total).
+    use_cache=True  — Phase 3 KV cache: prefill the prompt once, then feed only
+    the new token each step and attend it against the cached history (O(n)).
+    Both paths produce identical tokens; only the work differs.
     """
     params = params or SamplingParams()
     device = input_ids.device
-
-    if input_ids.dim() == 2:
-        if input_ids.size(0) != 1:
-            raise ValueError("naive generate handles batch size 1; batching lands in Phase 5")
-        prompt_ids = input_ids[0].tolist()
-    else:
-        prompt_ids = input_ids.tolist()
-
+    prompt_ids, generator = _prepare(input_ids, params, device)
     eos_set = _normalize_eos(eos_token_id)
-    generator: torch.Generator | None = None
-    if params.seed is not None and not params.greedy:
-        generator = torch.Generator(device=device).manual_seed(params.seed)
 
+    if use_cache:
+        return _generate_cached(model, prompt_ids, params, eos_set, generator, device)
+    return _generate_naive(model, prompt_ids, params, eos_set, generator, device)
+
+
+def _generate_naive(model, prompt_ids, params, eos_set, generator, device) -> GenerationOutput:
     seq = list(prompt_ids)
     generated: list[int] = []
     decode_seconds: list[float] = []
@@ -132,8 +149,7 @@ def generate(
     prefill_seconds = time.perf_counter() - t0
     seq.append(token)
     generated.append(token)
-    if token in eos_set:
-        stopped_on_eos = True
+    stopped_on_eos = token in eos_set
 
     # Remaining tokens: each re-runs the full (growing) sequence — the naive cost.
     while not stopped_on_eos and len(generated) < params.max_new_tokens:
@@ -143,8 +159,48 @@ def generate(
         decode_seconds.append(time.perf_counter() - t)
         seq.append(token)
         generated.append(token)
-        if token in eos_set:
-            stopped_on_eos = True
+        stopped_on_eos = token in eos_set
+
+    return GenerationOutput(
+        prompt_token_ids=prompt_ids,
+        generated_token_ids=generated,
+        prefill_seconds=prefill_seconds,
+        decode_seconds=decode_seconds,
+        stopped_on_eos=stopped_on_eos,
+    )
+
+
+def _generate_cached(model, prompt_ids, params, eos_set, generator, device) -> GenerationOutput:
+    from minivllm.cache import KVCache
+
+    dtype = next(model.parameters()).dtype
+    cache = KVCache(
+        model.cfg,
+        max_seq_len=len(prompt_ids) + params.max_new_tokens,
+        device=device,
+        dtype=dtype,
+    )
+
+    generated: list[int] = []
+    decode_seconds: list[float] = []
+    stopped_on_eos = False
+
+    # Prefill: the whole prompt goes in once and fills the cache. TTFT.
+    t0 = time.perf_counter()
+    logits = model(torch.tensor([prompt_ids], device=device), cache=cache)[0, -1]
+    token = _select_next_token(logits, params, generator)
+    prefill_seconds = time.perf_counter() - t0
+    generated.append(token)
+    stopped_on_eos = token in eos_set
+
+    # Decode: feed only the newest token; positions/mask come from cache.length.
+    while not stopped_on_eos and len(generated) < params.max_new_tokens:
+        t = time.perf_counter()
+        logits = model(torch.tensor([[token]], device=device), cache=cache)[0, -1]
+        token = _select_next_token(logits, params, generator)
+        decode_seconds.append(time.perf_counter() - t)
+        generated.append(token)
+        stopped_on_eos = token in eos_set
 
     return GenerationOutput(
         prompt_token_ids=prompt_ids,

@@ -16,12 +16,17 @@ Qwen3-specific details that matter for matching the reference:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from minivllm.config import ModelConfig
 from minivllm.layers import RMSNorm, RotaryEmbedding, apply_rotary_pos_emb
+
+if TYPE_CHECKING:
+    from minivllm.cache import KVCache
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -63,17 +68,25 @@ class Attention(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         attn_mask: torch.Tensor | None,
+        cache: "KVCache | None" = None,
+        layer_idx: int | None = None,
     ) -> torch.Tensor:
         b, s, _ = x.shape
 
         # Project then split into heads. q_norm/k_norm operate on the last
         # (head_dim) axis, so we apply them on the [b, s, n, head_dim] view
-        # before transposing to [b, n, s, head_dim].
+        # before transposing to [b, n, s, head_dim]. With a cache, x holds only
+        # the new token(s), so q/k/v here are computed for those positions only.
         q = self.q_norm(self.q_proj(x).view(b, s, self.n_heads, self.head_dim)).transpose(1, 2)
         k = self.k_norm(self.k_proj(x).view(b, s, self.n_kv_heads, self.head_dim)).transpose(1, 2)
         v = self.v_proj(x).view(b, s, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+        # Append the new (post-RoPE) K/V and retrieve the full history. RoPE is
+        # baked into the keys before caching, so cached keys are reused as-is.
+        if cache is not None:
+            k, v = cache.extend(layer_idx, k, v)
 
         # GQA: replicate KV heads up to the query-head count.
         k = repeat_kv(k, self.cfg.num_kv_groups)
@@ -111,8 +124,10 @@ class DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin, attn_mask):
-        x = x + self.self_attn(self.input_layernorm(x), cos, sin, attn_mask)
+    def forward(self, x, cos, sin, attn_mask, cache=None, layer_idx=None):
+        x = x + self.self_attn(
+            self.input_layernorm(x), cos, sin, attn_mask, cache, layer_idx
+        )
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
 
@@ -132,24 +147,34 @@ class Qwen3Model(nn.Module):
         self,
         input_ids: torch.Tensor,
         position_ids: torch.Tensor | None = None,
+        cache: "KVCache | None" = None,
     ) -> torch.Tensor:
         b, s = input_ids.shape
         device = input_ids.device
+        past = cache.length if cache is not None else 0
 
+        # With a cache, the new token(s) sit at absolute positions [past, past+s).
         if position_ids is None:
-            position_ids = torch.arange(s, device=device).unsqueeze(0).expand(b, s)
+            position_ids = torch.arange(past, past + s, device=device).unsqueeze(0).expand(b, s)
 
         x = self.embed_tokens(input_ids)
-        cos, sin = self.rotary(position_ids)
+        cos, sin = self.rotary(position_ids)  # for the new tokens only
         cos = cos.to(x.dtype)
         sin = sin.to(x.dtype)
 
-        # Causal mask: additive, [1, 1, s, s], -inf above the diagonal.
-        mask = torch.full((s, s), float("-inf"), device=device, dtype=x.dtype)
-        mask = torch.triu(mask, diagonal=1)[None, None, :, :]
+        # Causal mask. Queries are the `s` new tokens at absolute rows
+        # [past, past+s); keys span the full history of length total = past + s.
+        # Query row i may attend to key j iff j <= past + i. Without a cache
+        # past = 0 and this reduces to the usual upper-triangular mask. A single
+        # decode step (s == 1) needs no masking — it sees the whole history.
+        total = past + s
+        mask = torch.full((s, total), float("-inf"), device=device, dtype=x.dtype)
+        mask = torch.triu(mask, diagonal=past + 1)[None, None, :, :]
 
-        for layer in self.layers:
-            x = layer(x, cos, sin, mask)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, cos, sin, mask, cache, i)
+        if cache is not None:
+            cache.advance(s)
         return self.norm(x)
 
 
@@ -166,6 +191,7 @@ class Qwen3ForCausalLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         position_ids: torch.Tensor | None = None,
+        cache: "KVCache | None" = None,
     ) -> torch.Tensor:
-        hidden = self.model(input_ids, position_ids)
+        hidden = self.model(input_ids, position_ids, cache)
         return self.lm_head(hidden)
