@@ -23,10 +23,15 @@ minivllm/
   model.py        # from-scratch Qwen3: attention (GQA + QK-Norm), SwiGLU, decoder
   loader.py       # map HF safetensors -> our modules
   validation.py   # logit-parity check vs the HF reference
+  generate.py     # naive autoregressive decode + sampling (Phase 2 baseline)
+  benchmark.py    # TTFT / decode-latency / throughput harness
 scripts/
   validate_logits.py
+  generate.py     # CLI: generate text
+  benchmark.py    # CLI: run the baseline benchmark
 tests/
   test_logits.py
+  test_generation.py
 ```
 
 Design intent: clean separation between **model**, **KV-cache manager**,
@@ -47,7 +52,7 @@ pip install -r requirements.txt
 | Phase | What | Status |
 |---|---|---|
 | 1 | Correct forward pass + logit parity | ✅ |
-| 2 | Naive generation + baseline benchmark | ⏳ |
+| 2 | Naive generation + baseline benchmark | ✅ |
 | 3 | KV cache | ⏳ |
 | 4 | Paged KV cache (PagedAttention-style) | ⏳ |
 | 5 | Continuous (iteration-level) batching | ⏳ |
@@ -79,4 +84,42 @@ candidates.
 - RMSNorm computed in float32; RoPE with a large theta (1e6).
 - Tied input/output embeddings on the 0.6B (no separate `lm_head.weight`).
 
-<!-- Benchmark numbers land here starting Phase 2. -->
+## Phase 2 — Naive generation + baseline
+
+Plain autoregressive decode with **no KV cache**: every step re-runs the model
+over the entire sequence so far. That is deliberate — it is the slow baseline
+every later phase has to beat, and the recompute cost grows O(n²) in sequence
+length, which is precisely what the KV cache (Phase 3) removes.
+
+```bash
+python -m scripts.generate --prompt "The capital of France is"
+python -m scripts.benchmark --max-new-tokens 64 --runs 3
+python -m pytest tests/test_generation.py -v
+```
+
+The harness reports time-to-first-token (TTFT, the prefill latency), per-token
+decode latency (p50/p99), and throughput. A warmup run precedes the timed runs;
+EOS is ignored during benchmarking so each run does a fixed amount of work.
+
+**Correctness carries forward from Phase 1.** `test_generation.py` asserts our
+greedy decode matches a manual HuggingFace greedy loop token-for-token across
+many steps — so the cache-free loop is provably correct *before* we start
+optimizing it.
+
+### Baseline numbers
+
+Measured on the dev laptop: **CPU-only** (Intel i7-1250U, 10 torch threads),
+float32, Qwen3-0.6B, 5-token prompt → 64 new tokens, 3 runs.
+
+| Phase | Decode tok/s | TTFT (ms) | Decode p50 / p99 (ms/tok) |
+|---|---|---|---|
+| Naive (no cache) | 1.00 | 403 | 901.1 / 2467.4 |
+
+The decode p50→p99 spread (901 → 2467 ms) is the O(n²) tax made visible: the
+last tokens of the sequence are far slower than the first because each one
+re-attends over everything before it. Phase 3 should flatten that curve and lift
+decode throughput sharply.
+
+> GPU numbers (and the dramatic throughput figures) come once we rent a CUDA box
+> for the later phases; the CPU baseline above is what the *algorithmic* wins in
+> Phases 3–5 are measured against on the same hardware.
