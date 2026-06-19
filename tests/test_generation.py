@@ -19,6 +19,7 @@ MODEL = "Qwen/Qwen3-0.6B"
 
 # --- fast unit tests (no model) -------------------------------------------------
 
+
 def test_greedy_selects_argmax():
     logits = torch.tensor([0.1, 5.0, -2.0, 3.0])
     params = SamplingParams(temperature=0.0)
@@ -44,6 +45,7 @@ def test_top_k_one_is_greedy():
 
 
 # --- slow gate: greedy decode matches the HF reference loop ---------------------
+
 
 @torch.no_grad()
 def _hf_greedy_tokens(model_id: str, prompt: str, n: int) -> list[int]:

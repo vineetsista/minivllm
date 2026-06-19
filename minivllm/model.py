@@ -38,11 +38,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     if n_rep == 1:
         return x
     b, n_kv, s, d = x.shape
-    return (
-        x[:, :, None, :, :]
-        .expand(b, n_kv, n_rep, s, d)
-        .reshape(b, n_kv * n_rep, s, d)
-    )
+    return x[:, :, None, :, :].expand(b, n_kv, n_rep, s, d).reshape(b, n_kv * n_rep, s, d)
 
 
 class Attention(nn.Module):
@@ -52,7 +48,7 @@ class Attention(nn.Module):
         self.n_heads = cfg.num_attention_heads
         self.n_kv_heads = cfg.num_key_value_heads
         self.head_dim = cfg.head_dim
-        self.scaling = self.head_dim ** -0.5
+        self.scaling = self.head_dim**-0.5
 
         self.q_proj = nn.Linear(cfg.hidden_size, self.n_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(cfg.hidden_size, self.n_kv_heads * self.head_dim, bias=False)
@@ -69,7 +65,7 @@ class Attention(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         attn_mask: torch.Tensor | None,
-        cache: "KVCache | None" = None,
+        cache: KVCache | None = None,
         layer_idx: int | None = None,
     ) -> torch.Tensor:
         b, s, _ = x.shape
@@ -87,6 +83,7 @@ class Attention(nn.Module):
         # Append the new (post-RoPE) K/V and retrieve the full history. RoPE is
         # baked into the keys before caching, so cached keys are reused as-is.
         if cache is not None:
+            assert layer_idx is not None  # paired with cache by the decoder layer
             k, v = cache.extend(layer_idx, k, v)
 
         # GQA: replicate KV heads up to the query-head count.
@@ -126,9 +123,7 @@ class DecoderLayer(nn.Module):
         self.mlp = MLP(cfg)
 
     def forward(self, x, cos, sin, attn_mask, cache=None, layer_idx=None):
-        x = x + self.self_attn(
-            self.input_layernorm(x), cos, sin, attn_mask, cache, layer_idx
-        )
+        x = x + self.self_attn(self.input_layernorm(x), cos, sin, attn_mask, cache, layer_idx)
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
 
@@ -148,7 +143,7 @@ class Qwen3Model(nn.Module):
         self,
         input_ids: torch.Tensor,
         position_ids: torch.Tensor | None = None,
-        cache: "KVCache | None" = None,
+        cache: KVCache | None = None,
     ) -> torch.Tensor:
         b, s = input_ids.shape
         device = input_ids.device
@@ -183,7 +178,7 @@ class Qwen3Model(nn.Module):
         input_ids: torch.Tensor,
         position_ids: torch.Tensor,
         attn_mask: torch.Tensor,
-        cache: "BatchedKVCache",
+        cache: BatchedKVCache,
     ) -> torch.Tensor:
         """One batched decode step over B slots (Phase 5 continuous batching).
 
@@ -215,7 +210,7 @@ class Qwen3ForCausalLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         position_ids: torch.Tensor | None = None,
-        cache: "KVCache | None" = None,
+        cache: KVCache | None = None,
     ) -> torch.Tensor:
         hidden = self.model(input_ids, position_ids, cache)
         return self.lm_head(hidden)

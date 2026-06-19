@@ -1,0 +1,14 @@
+# Normalize line endings: LF in the repo, checked out native on Windows.
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Treat weights/binaries as binary (never committed, but be explicit).
+*.safetensors binary
+*.bin binary
+*.png binary
+*.svg text eol=lf

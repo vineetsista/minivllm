@@ -18,7 +18,9 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
+from minivllm.cache import KVCache
 from minivllm.model import Qwen3ForCausalLM
+from minivllm.paged_cache import PagedKVCache
 
 
 @dataclass
@@ -180,15 +182,12 @@ def _generate_cached(
 ) -> GenerationOutput:
     dtype = next(model.parameters()).dtype
     max_seq_len = len(prompt_ids) + params.max_new_tokens
+    cache: KVCache | PagedKVCache
     if paged:
-        from minivllm.paged_cache import PagedKVCache
-
         cache = PagedKVCache(
             model.cfg, max_seq_len=max_seq_len, block_size=block_size, device=device, dtype=dtype
         )
     else:
-        from minivllm.cache import KVCache
-
         cache = KVCache(model.cfg, max_seq_len=max_seq_len, device=device, dtype=dtype)
 
     generated: list[int] = []

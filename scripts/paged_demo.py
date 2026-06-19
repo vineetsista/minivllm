@@ -59,7 +59,7 @@ def main() -> int:
     used = sum(lengths)
     static = args.n_seqs * args.max_seq_len
     blk = args.block_size
-    paged = sum(math.ceil(l / blk) * blk for l in lengths)
+    paged = sum(math.ceil(length / blk) * blk for length in lengths)
 
     console.print(
         f"[bold]{args.model}[/bold] · float16 · {cfg.num_hidden_layers} layers · "
@@ -70,12 +70,19 @@ def main() -> int:
         f"(= 2 x {cfg.num_hidden_layers} x {cfg.num_key_value_heads} x {cfg.head_dim} x 2 bytes)\n"
     )
 
-    t = Table(title=f"KV memory for {args.n_seqs} sequences (max_seq_len {args.max_seq_len}, block {blk})")
+    t = Table(
+        title=f"KV memory for {args.n_seqs} sequences (max_seq_len {args.max_seq_len}, block {blk})"
+    )
     t.add_column("scheme")
     t.add_column("reserved tokens", justify="right")
     t.add_column("KV memory", justify="right")
     t.add_column("utilization", justify="right")
-    t.add_row("contiguous (static)", f"{static:,}", f"{_gib(static * bpt):.2f} GiB", f"{100 * used / static:.1f}%")
+    t.add_row(
+        "contiguous (static)",
+        f"{static:,}",
+        f"{_gib(static * bpt):.2f} GiB",
+        f"{100 * used / static:.1f}%",
+    )
     t.add_row("paged", f"{paged:,}", f"{_gib(paged * bpt):.2f} GiB", f"{100 * used / paged:.1f}%")
     console.print(t)
 

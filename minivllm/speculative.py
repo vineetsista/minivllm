@@ -69,8 +69,12 @@ class ModelDrafter:
 
     @torch.no_grad()
     def propose(self, history: list[int], k: int) -> list[int]:
-        cache = KVCache(self.model.cfg, max_seq_len=len(history) + k, device=self.device,
-                        dtype=next(self.model.parameters()).dtype)
+        cache = KVCache(
+            self.model.cfg,
+            max_seq_len=len(history) + k,
+            device=self.device,
+            dtype=next(self.model.parameters()).dtype,
+        )
         logits = self.model(torch.tensor([history], device=self.device), cache=cache)[0, -1]
         out = []
         token = int(logits.argmax())
@@ -114,7 +118,9 @@ class SpeculativeDecoder:
         self.dtype = next(target.parameters()).dtype
 
     @torch.no_grad()
-    def generate(self, prompt_ids: list[int], max_new_tokens: int = 64) -> tuple[list[int], SpecStats]:
+    def generate(
+        self, prompt_ids: list[int], max_new_tokens: int = 64
+    ) -> tuple[list[int], SpecStats]:
         cache = KVCache(
             self.target.cfg,
             max_seq_len=len(prompt_ids) + max_new_tokens + self.k + 1,

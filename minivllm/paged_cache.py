@@ -67,8 +67,14 @@ class BlockAllocator:
         block_shape = (num_blocks, block_size, cfg.num_key_value_heads, cfg.head_dim)
         # Same block id indexes into every layer's pool — the block table is
         # shared across layers, only the contents differ per layer.
-        self.k = [torch.empty(block_shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)]
-        self.v = [torch.empty(block_shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)]
+        self.k = [
+            torch.empty(block_shape, device=device, dtype=dtype)
+            for _ in range(cfg.num_hidden_layers)
+        ]
+        self.v = [
+            torch.empty(block_shape, device=device, dtype=dtype)
+            for _ in range(cfg.num_hidden_layers)
+        ]
         self._free: list[int] = list(range(num_blocks))
 
     @property
@@ -78,8 +84,7 @@ class BlockAllocator:
     def allocate(self) -> int:
         if not self._free:
             raise RuntimeError(
-                f"block pool exhausted ({self.num_blocks} blocks, "
-                f"{self.block_size} tokens each)"
+                f"block pool exhausted ({self.num_blocks} blocks, {self.block_size} tokens each)"
             )
         return self._free.pop()
 

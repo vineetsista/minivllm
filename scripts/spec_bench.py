@@ -52,13 +52,24 @@ def main() -> int:
     params = SamplingParams(max_new_tokens=args.max_new_tokens, temperature=0.0)
 
     # Warm up.
-    generate(model, tok(args.prompt, return_tensors="pt").input_ids,
-             SamplingParams(max_new_tokens=4, temperature=0.0), eos_token_id=None, use_cache=True)
+    generate(
+        model,
+        tok(args.prompt, return_tensors="pt").input_ids,
+        SamplingParams(max_new_tokens=4, temperature=0.0),
+        eos_token_id=None,
+        use_cache=True,
+    )
 
     import time
+
     t0 = time.perf_counter()
-    base = generate(model, tok(args.prompt, return_tensors="pt").input_ids, params,
-                    eos_token_id=None, use_cache=True)
+    base = generate(
+        model,
+        tok(args.prompt, return_tensors="pt").input_ids,
+        params,
+        eos_token_id=None,
+        use_cache=True,
+    )
     base_secs = time.perf_counter() - t0
     base_forwards = base.num_generated  # one target forward per token
 
@@ -75,8 +86,11 @@ def main() -> int:
     table.add_column("wall (s)", justify="right")
     table.add_row("greedy", str(base_forwards), str(base_forwards), "1.00", f"{base_secs:.2f}")
     table.add_row(
-        f"speculative", str(stats.generated), str(stats.target_forwards),
-        f"{stats.tokens_per_forward:.2f}", f"{stats.seconds:.2f}",
+        "speculative",
+        str(stats.generated),
+        str(stats.target_forwards),
+        f"{stats.tokens_per_forward:.2f}",
+        f"{stats.seconds:.2f}",
     )
     console.print(table)
     wall_speedup = base_secs / stats.seconds if stats.seconds else float("nan")

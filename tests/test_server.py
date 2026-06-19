@@ -40,8 +40,11 @@ def _tiny_model() -> Qwen3ForCausalLM:
 
 def _greedy(model, prompt, n):
     return generate(
-        model, torch.tensor([prompt]),
-        SamplingParams(max_new_tokens=n, temperature=0.0), eos_token_id=None, use_cache=True,
+        model,
+        torch.tensor([prompt]),
+        SamplingParams(max_new_tokens=n, temperature=0.0),
+        eos_token_id=None,
+        use_cache=True,
     ).generated_token_ids
 
 
@@ -60,7 +63,9 @@ def test_serving_engine_concurrent_matches_greedy():
             reqs.append((idx, req))
 
         # Submit concurrently from several threads to stress the queue/worker.
-        threads = [threading.Thread(target=submit_one, args=(i, p, n)) for i, (p, n) in enumerate(specs)]
+        threads = [
+            threading.Thread(target=submit_one, args=(i, p, n)) for i, (p, n) in enumerate(specs)
+        ]
         for t in threads:
             t.start()
         for t in threads:

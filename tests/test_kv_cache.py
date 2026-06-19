@@ -1,9 +1,9 @@
 """Phase 3 correctness: the KV cache must not change the output, only the cost.
 
-  * Fast unit test for the cache buffer mechanics (no model download).
-  * Slow gate: cached greedy decode == naive greedy decode == HuggingFace
-    greedy loop, token-for-token. If caching the post-RoPE keys or the
-    position/mask bookkeeping were wrong, this is where it would show up.
+* Fast unit test for the cache buffer mechanics (no model download).
+* Slow gate: cached greedy decode == naive greedy decode == HuggingFace
+  greedy loop, token-for-token. If caching the post-RoPE keys or the
+  position/mask bookkeeping were wrong, this is where it would show up.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ def _tiny_cfg() -> ModelConfig:
 
 
 # --- fast unit test (no model) --------------------------------------------------
+
 
 def test_cache_extend_and_advance():
     cfg = _tiny_cfg()
@@ -71,6 +72,7 @@ def test_cache_overflow_raises():
 
 # --- slow gate: cached == naive == reference ------------------------------------
 
+
 @torch.no_grad()
 def _hf_greedy_tokens(model_id: str, prompt: str, n: int) -> list[int]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -98,8 +100,12 @@ def test_cached_decode_matches_naive_and_reference():
     input_ids = tok(prompt, return_tensors="pt").input_ids
     params = SamplingParams(max_new_tokens=n, temperature=0.0)
 
-    naive = generate(model, input_ids, params, eos_token_id=None, use_cache=False).generated_token_ids
-    cached = generate(model, input_ids, params, eos_token_id=None, use_cache=True).generated_token_ids
+    naive = generate(
+        model, input_ids, params, eos_token_id=None, use_cache=False
+    ).generated_token_ids
+    cached = generate(
+        model, input_ids, params, eos_token_id=None, use_cache=True
+    ).generated_token_ids
     ref = _hf_greedy_tokens(MODEL, prompt, n)
 
     assert cached == naive, f"cache changed the output:\n naive={naive}\n cache={cached}"

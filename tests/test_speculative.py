@@ -1,12 +1,12 @@
 """Phase 7 correctness: speculative decoding must equal plain greedy, exactly.
 
-  * Fast: n-gram drafter logic, and — the important one — a tiny random-weight
-    target where speculative greedy output must match single-sequence greedy
-    output token-for-token. That exercises the parallel verify + KV rollback
-    (the hard part) with no model download, at any acceptance level.
-  * Slow gate: same invariant on the real Qwen3-0.6B, on a repetitive prompt
-    where the n-gram drafter actually lands tokens (acceptance > 0, fewer target
-    forwards than tokens generated).
+* Fast: n-gram drafter logic, and — the important one — a tiny random-weight
+  target where speculative greedy output must match single-sequence greedy
+  output token-for-token. That exercises the parallel verify + KV rollback
+  (the hard part) with no model download, at any acceptance level.
+* Slow gate: same invariant on the real Qwen3-0.6B, on a repetitive prompt
+  where the n-gram drafter actually lands tokens (acceptance > 0, fewer target
+  forwards than tokens generated).
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ def _tiny_model() -> Qwen3ForCausalLM:
 
 # --- fast: drafter logic --------------------------------------------------------
 
+
 def test_ngram_drafter_proposes_recurring_continuation():
     drafter = NgramDrafter(max_ngram=3)
     # "a b c" occurred earlier followed by "d e"; the suffix "... a b c" should
@@ -58,14 +59,18 @@ def test_ngram_drafter_empty_when_no_match():
 
 # --- fast: exact-match against greedy on a tiny random model --------------------
 
+
 def test_speculative_matches_greedy_tiny():
     model = _tiny_model()
     prompt = [1, 2, 3, 4, 5]
     n = 20
 
     greedy = generate(
-        model, torch.tensor([prompt]),
-        SamplingParams(max_new_tokens=n, temperature=0.0), eos_token_id=None, use_cache=True,
+        model,
+        torch.tensor([prompt]),
+        SamplingParams(max_new_tokens=n, temperature=0.0),
+        eos_token_id=None,
+        use_cache=True,
     ).generated_token_ids
 
     for k in (1, 4, 8):  # acceptance window size must not change the output
@@ -74,6 +79,7 @@ def test_speculative_matches_greedy_tiny():
 
 
 # --- slow gate: exact-match on the real model, with real acceptance -------------
+
 
 def test_speculative_matches_greedy_real_model():
     from transformers import AutoTokenizer
@@ -88,8 +94,11 @@ def test_speculative_matches_greedy_real_model():
     n = 40
 
     greedy = generate(
-        model, torch.tensor([prompt_ids]),
-        SamplingParams(max_new_tokens=n, temperature=0.0), eos_token_id=None, use_cache=True,
+        model,
+        torch.tensor([prompt_ids]),
+        SamplingParams(max_new_tokens=n, temperature=0.0),
+        eos_token_id=None,
+        use_cache=True,
     ).generated_token_ids
 
     spec, stats = SpeculativeDecoder(model, k=4).generate(prompt_ids, n)

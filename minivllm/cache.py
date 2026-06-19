@@ -34,8 +34,12 @@ class KVCache:
         dtype = dtype or cfg.dtype
         shape = (batch_size, cfg.num_key_value_heads, max_seq_len, cfg.head_dim)
         # One K and one V buffer per layer; pre-allocated, never re-allocated.
-        self.k = [torch.empty(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)]
-        self.v = [torch.empty(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)]
+        self.k = [
+            torch.empty(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)
+        ]
+        self.v = [
+            torch.empty(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)
+        ]
         self.max_seq_len = max_seq_len
         self._length = 0  # tokens currently stored (shared across layers)
 

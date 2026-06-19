@@ -43,7 +43,7 @@ class ModelConfig:
         return self.num_attention_heads // self.num_key_value_heads
 
     @classmethod
-    def from_hf(cls, model_id_or_path: str, dtype: torch.dtype = torch.float32) -> "ModelConfig":
+    def from_hf(cls, model_id_or_path: str, dtype: torch.dtype = torch.float32) -> ModelConfig:
         """Build our config from a HuggingFace config.json.
 
         Done once at load time; not on any hot path.

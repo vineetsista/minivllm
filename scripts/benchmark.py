@@ -40,8 +40,9 @@ def main() -> int:
     ap.add_argument("--max-new-tokens", type=int, default=64)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--warmup", type=int, default=1)
-    ap.add_argument("--only", choices=["naive", "cache"], default=None,
-                    help="run just one path instead of both")
+    ap.add_argument(
+        "--only", choices=["naive", "cache"], default=None, help="run just one path instead of both"
+    )
     args = ap.parse_args()
 
     from transformers import AutoTokenizer
@@ -65,8 +66,14 @@ def main() -> int:
         )
         results.append(
             run_benchmark(
-                model, tok, cfg, prompt=args.prompt, params=params,
-                n_runs=args.runs, warmup=args.warmup, use_cache=use_cache,
+                model,
+                tok,
+                cfg,
+                prompt=args.prompt,
+                params=params,
+                n_runs=args.runs,
+                warmup=args.warmup,
+                use_cache=use_cache,
                 model_id=args.model,
             )
         )

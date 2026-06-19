@@ -6,6 +6,8 @@ kernels behind the same call signatures without touching model.py.
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.nn as nn
 
@@ -51,7 +53,7 @@ class RotaryEmbedding(nn.Module):
     @torch.no_grad()
     def forward(self, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # position_ids: [batch, seq] -> freqs: [batch, seq, head_dim/2]
-        inv_freq = self.inv_freq.to(position_ids.device)
+        inv_freq = cast(torch.Tensor, self.inv_freq).to(position_ids.device)
         freqs = position_ids.float()[..., None] * inv_freq[None, None, :]
         emb = torch.cat((freqs, freqs), dim=-1)  # [batch, seq, head_dim]
         return emb.cos(), emb.sin()

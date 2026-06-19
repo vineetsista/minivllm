@@ -20,7 +20,7 @@ between policies and matches single-sequence decode — only the schedule differ
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 
@@ -85,17 +85,16 @@ class ContinuousBatchingEngine:
     def _prefill(self, cache: BatchedKVCache, slot: int, req: Request, params, generator):
         """Run the prompt through a temp contiguous cache, copy K/V into `slot`,
         and return the first sampled token."""
-        tmp = KVCache(self.cfg, max_seq_len=len(req.prompt_ids), device=self.device, dtype=self.dtype)
+        tmp = KVCache(
+            self.cfg, max_seq_len=len(req.prompt_ids), device=self.device, dtype=self.dtype
+        )
         ids = torch.tensor([req.prompt_ids], device=self.device)
         logits = self.model(ids, cache=tmp)[0, -1]
         cache.load_prefill(slot, tmp, len(req.prompt_ids))
         return _select_next_token(logits, params, generator)
 
     def _finished(self, slot: _Slot) -> bool:
-        return (
-            len(slot.generated) >= slot.req.max_new_tokens
-            or slot.next_token in self.eos
-        )
+        return len(slot.generated) >= slot.req.max_new_tokens or slot.next_token in self.eos
 
     @torch.no_grad()
     def run(
@@ -133,23 +132,25 @@ class ContinuousBatchingEngine:
         while waiting or any(slots):
             # Admission policy: continuous fills any free slot every step; static
             # only refills once the whole batch has drained.
-            can_admit = any(s is None for s in slots) if policy == "continuous" else all(
-                s is None for s in slots
+            can_admit = (
+                any(s is None for s in slots)
+                if policy == "continuous"
+                else all(s is None for s in slots)
             )
             if can_admit:
                 for i in range(self.max_slots):
                     if waiting and slots[i] is None:
                         admit_into(i)
 
-            active = [i for i, s in enumerate(slots) if s is not None]
+            active = [(i, s) for i, s in enumerate(slots) if s is not None]
             if not active:
                 continue  # everything admitted this round finished at prefill
 
             # Build the batched decode step.
             input_ids = torch.zeros(self.max_slots, 1, dtype=torch.long, device=self.device)
             active_mask = torch.zeros(self.max_slots, dtype=torch.bool, device=self.device)
-            for i in active:
-                input_ids[i, 0] = slots[i].next_token
+            for i, s in active:
+                input_ids[i, 0] = s.next_token
                 active_mask[i] = True
 
             attn_mask = cache.make_mask(self.dtype)
@@ -157,8 +158,7 @@ class ContinuousBatchingEngine:
             cache.advance(active_mask)
             decode_steps += 1
 
-            for i in active:
-                s = slots[i]
+            for i, s in active:
                 token = _select_next_token(logits[i, 0], params, generator)
                 s.generated.append(token)
                 s.next_token = token

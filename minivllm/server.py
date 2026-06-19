@@ -106,14 +106,22 @@ class ServingEngine:
 
     # -- public API --------------------------------------------------------------
 
-    def submit(self, prompt_ids: list[int], max_new_tokens: int, params: SamplingParams) -> _ServeReq:
+    def submit(
+        self, prompt_ids: list[int], max_new_tokens: int, params: SamplingParams
+    ) -> _ServeReq:
         if len(prompt_ids) + max_new_tokens > self.max_seq_len:
             raise ValueError(
                 f"prompt({len(prompt_ids)}) + max_new({max_new_tokens}) exceeds "
                 f"server max_seq_len {self.max_seq_len}"
             )
         with self._cond:
-            req = _ServeReq(self._next_id, list(prompt_ids), max_new_tokens, params, queued_at=time.perf_counter())
+            req = _ServeReq(
+                self._next_id,
+                list(prompt_ids),
+                max_new_tokens,
+                params,
+                queued_at=time.perf_counter(),
+            )
             self._next_id += 1
             self._waiting.append(req)
             self._cond.notify()
@@ -128,8 +136,10 @@ class ServingEngine:
     # -- worker ------------------------------------------------------------------
 
     @torch.no_grad()
-    def _prefill(self, slot_idx: int, req: _ServeReq) -> int:
-        tmp = KVCache(self.cfg, max_seq_len=len(req.prompt_ids), device=self.device, dtype=self.dtype)
+    def _prefill(self, slot_idx: int, req: _ServeReq) -> tuple[int, torch.Generator | None]:
+        tmp = KVCache(
+            self.cfg, max_seq_len=len(req.prompt_ids), device=self.device, dtype=self.dtype
+        )
         ids = torch.tensor([req.prompt_ids], device=self.device)
         logits = self.model(ids, cache=tmp)[0, -1]
         self.cache.load_prefill(slot_idx, tmp, len(req.prompt_ids))
@@ -180,23 +190,25 @@ class ServingEngine:
                     # track partial generation on the slot via req.result staging
                     req.result = generated
 
-            active = [i for i, s in enumerate(self.slots) if s is not None]
+            active = [(i, s) for i, s in enumerate(self.slots) if s is not None]
             if not active:
                 continue
 
             input_ids = torch.zeros(self.max_slots, 1, dtype=torch.long, device=self.device)
             active_mask = torch.zeros(self.max_slots, dtype=torch.bool, device=self.device)
-            for i in active:
-                input_ids[i, 0] = self.slots[i].next_token
+            for i, slot in active:
+                input_ids[i, 0] = slot.next_token
                 active_mask[i] = True
 
             attn_mask = self.cache.make_mask(self.dtype)
-            logits = self.model.decode_step(input_ids, self.cache.position_ids(), attn_mask, self.cache)
+            logits = self.model.decode_step(
+                input_ids, self.cache.position_ids(), attn_mask, self.cache
+            )
             self.cache.advance(active_mask)
 
-            for i in active:
-                slot = self.slots[i]
+            for i, slot in active:
                 token = _select_next_token(logits[i, 0], slot.req.params, slot.generator)
+                assert slot.req.result is not None  # set at admission
                 slot.req.result.append(token)
                 slot.next_token = token
                 if self._is_finished(slot.req.result, token, slot.req):
@@ -205,8 +217,8 @@ class ServingEngine:
 
 # --- FastAPI app ----------------------------------------------------------------
 
+
 def create_app(model_id: str = "Qwen/Qwen3-0.6B", max_slots: int = 4, max_seq_len: int = 1024):
-    import os
 
     from fastapi import FastAPI, HTTPException
 
@@ -265,7 +277,7 @@ def create_app(model_id: str = "Qwen/Qwen3-0.6B", max_slots: int = 4, max_seq_le
         try:
             req = engine.submit(prompt_ids, body.max_new_tokens, params)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         t0 = time.perf_counter()
         await asyncio.to_thread(req.event.wait)  # park the blocking wait off the event loop

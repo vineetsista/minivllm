@@ -1,10 +1,10 @@
 """Phase 5 correctness: batching changes the schedule, not the tokens.
 
-  * Fast: BatchedKVCache scatters each slot's token at its own length and masks
-    each row to its own valid range (no model needed).
-  * Slow gate: both the continuous and static engines reproduce, for every
-    request, exactly what single-sequence greedy decode produces. A batched-mask
-    or position bug would corrupt one row's attention and show up here.
+* Fast: BatchedKVCache scatters each slot's token at its own length and masks
+  each row to its own valid range (no model needed).
+* Slow gate: both the continuous and static engines reproduce, for every
+  request, exactly what single-sequence greedy decode produces. A batched-mask
+  or position bug would corrupt one row's attention and show up here.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ def _tiny_cfg() -> ModelConfig:
 
 # --- fast: batched cache mechanics ----------------------------------------------
 
+
 def test_batched_scatter_writes_per_slot_position():
     cfg = _tiny_cfg()
     cache = BatchedKVCache(cfg, num_slots=2, max_seq_len=5)
@@ -66,6 +67,7 @@ def test_batched_mask_is_per_row():
 
 # --- slow gate: engine == single-sequence decode --------------------------------
 
+
 def test_engine_matches_single_sequence_both_policies():
     from transformers import AutoTokenizer
 
@@ -76,16 +78,20 @@ def test_engine_matches_single_sequence_both_policies():
     prompt_ids = tok("The capital of France is", return_tensors="pt").input_ids[0].tolist()
 
     # Varied generation lengths — the case where scheduling actually matters.
-    reqs = [Request(id=i, prompt_ids=list(prompt_ids), max_new_tokens=n)
-            for i, n in enumerate([4, 9, 6, 5, 8])]
+    reqs = [
+        Request(id=i, prompt_ids=list(prompt_ids), max_new_tokens=n)
+        for i, n in enumerate([4, 9, 6, 5, 8])
+    ]
 
     # Reference: single-sequence greedy decode (EOS ignored for fixed lengths).
     ref = {}
     for r in reqs:
         out = generate(
-            model, torch.tensor([r.prompt_ids]),
+            model,
+            torch.tensor([r.prompt_ids]),
             SamplingParams(max_new_tokens=r.max_new_tokens, temperature=0.0),
-            eos_token_id=None, use_cache=True,
+            eos_token_id=None,
+            use_cache=True,
         )
         ref[r.id] = out.generated_token_ids
 

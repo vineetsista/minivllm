@@ -23,7 +23,7 @@ class ComparisonResult:
     max_abs_diff: float
     mean_abs_diff: float
     argmax_match_frac: float  # fraction of positions where argmax agrees
-    topk_match: bool          # do the top-k final-token candidates agree (as a set)
+    topk_match: bool  # do the top-k final-token candidates agree (as a set)
     topk: int
     ours_next_token: int
     ref_next_token: int
@@ -52,7 +52,7 @@ def compare_to_reference(
 
     # HuggingFace reference, same dtype/device. (transformers>=5 renamed the
     # arg torch_dtype -> dtype; we target 5.x so we use dtype.)
-    ref_model = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype).to(device).eval()
+    ref_model = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype).to(device).eval()  # type: ignore[arg-type]
     ref_logits = ref_model(input_ids).logits
 
     diff = (ours_logits - ref_logits).abs()

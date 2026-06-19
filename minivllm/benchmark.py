@@ -111,6 +111,8 @@ def run_benchmark(
         ttft_p99_s=_percentile(ttfts, 99),
         decode_latency_p50_ms=_percentile([s * 1000 for s in decode_latencies], 50),
         decode_latency_p99_ms=_percentile([s * 1000 for s in decode_latencies], 99),
-        decode_tokens_per_s=1.0 / mean_decode_s if mean_decode_s and mean_decode_s == mean_decode_s else float("nan"),
+        decode_tokens_per_s=1.0 / mean_decode_s
+        if mean_decode_s and mean_decode_s == mean_decode_s
+        else float("nan"),
         end_to_end_tokens_per_s=float(np.mean(e2e_tps)) if e2e_tps else float("nan"),
     )

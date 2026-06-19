@@ -43,7 +43,9 @@ def main() -> int:
 
     # High-variance lengths: one long sequence per group of `slots`, rest short.
     lengths = [args.long if i % args.slots == 0 else args.short for i in range(args.n_requests)]
-    reqs = [Request(id=i, prompt_ids=list(prompt_ids), max_new_tokens=n) for i, n in enumerate(lengths)]
+    reqs = [
+        Request(id=i, prompt_ids=list(prompt_ids), max_new_tokens=n) for i, n in enumerate(lengths)
+    ]
     console.print(
         f"{args.n_requests} requests · {args.slots} slots · "
         f"gen lengths {lengths} (mean {sum(lengths) / len(lengths):.0f})\n"
@@ -70,8 +72,11 @@ def main() -> int:
     for policy in ("static", "continuous"):
         s = results[policy]
         table.add_row(
-            policy, f"{s.seconds:.2f}", str(s.decode_steps),
-            f"{s.avg_batch_occupancy:.2f} / {args.slots}", f"{s.tokens_per_s:.2f}",
+            policy,
+            f"{s.seconds:.2f}",
+            str(s.decode_steps),
+            f"{s.avg_batch_occupancy:.2f} / {args.slots}",
+            f"{s.tokens_per_s:.2f}",
         )
     console.print(table)
 

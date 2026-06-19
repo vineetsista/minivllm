@@ -1,10 +1,10 @@
 """Phase 4 correctness: paging changes storage, not output, and recycles blocks.
 
-  * Fast: allocator alloc/free/reuse, block-table growth, pool sharing across
-    sequences, overflow, and that the paged gather reproduces a plain
-    contiguous buffer bit-for-bit.
-  * Slow gate: paged greedy decode == contiguous greedy decode == HuggingFace
-    greedy loop, token-for-token.
+* Fast: allocator alloc/free/reuse, block-table growth, pool sharing across
+  sequences, overflow, and that the paged gather reproduces a plain
+  contiguous buffer bit-for-bit.
+* Slow gate: paged greedy decode == contiguous greedy decode == HuggingFace
+  greedy loop, token-for-token.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ def _tiny_cfg() -> ModelConfig:
 
 
 # --- fast: allocator + block table ----------------------------------------------
+
 
 def test_allocator_alloc_free_reuse():
     cfg = _tiny_cfg()
@@ -111,6 +112,7 @@ def test_kv_bytes_per_token():
 
 # --- slow gate: paged == contiguous == reference --------------------------------
 
+
 @torch.no_grad()
 def _hf_greedy_tokens(model_id: str, prompt: str, n: int) -> list[int]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -138,7 +140,9 @@ def test_paged_decode_matches_contiguous_and_reference():
     input_ids = tok(prompt, return_tensors="pt").input_ids
     params = SamplingParams(max_new_tokens=n, temperature=0.0)
 
-    contig = generate(model, input_ids, params, eos_token_id=None, use_cache=True).generated_token_ids
+    contig = generate(
+        model, input_ids, params, eos_token_id=None, use_cache=True
+    ).generated_token_ids
     # Small block size on purpose, so the sequence spans several blocks.
     pgd = generate(
         model, input_ids, params, eos_token_id=None, use_cache=True, paged=True, block_size=4

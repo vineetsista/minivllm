@@ -36,8 +36,12 @@ class BatchedKVCache:
     ):
         dtype = dtype or cfg.dtype
         shape = (num_slots, cfg.num_key_value_heads, max_seq_len, cfg.head_dim)
-        self.k = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)]
-        self.v = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)]
+        self.k = [
+            torch.zeros(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)
+        ]
+        self.v = [
+            torch.zeros(shape, device=device, dtype=dtype) for _ in range(cfg.num_hidden_layers)
+        ]
         self.num_slots = num_slots
         self.max_seq_len = max_seq_len
         self.device = device
