@@ -120,6 +120,7 @@ class ServingEngine:
         # Metrics (worker writes under the lock; readers snapshot).
         self.completed = 0
         self.generated_tokens = 0
+        self.tokens_emitted = 0  # live, incremented per token (for throughput)
         self.prompt_tokens = 0
         self.decode_steps = 0
         self._recent_latency: deque[float] = deque(maxlen=256)  # end-to-end seconds
@@ -195,6 +196,7 @@ class ServingEngine:
             ttft = sorted(self._recent_ttft)
             completed = self.completed
             gen = self.generated_tokens
+            emitted = self.tokens_emitted
             prompt = self.prompt_tokens
             steps = self.decode_steps
 
@@ -207,9 +209,10 @@ class ServingEngine:
         return {
             "completed_requests": completed,
             "generated_tokens": gen,
+            "tokens_emitted": emitted,
             "prompt_tokens": prompt,
             "decode_steps": steps,
-            "tokens_per_decode_step": (gen / steps) if steps else 0.0,
+            "tokens_per_decode_step": (emitted / steps) if steps else 0.0,
             "queue_depth": len(self._waiting),
             "active_slots": sum(s is not None for s in self.slots),
             "max_slots": self.max_slots,
@@ -218,6 +221,7 @@ class ServingEngine:
             "ttft_p50_s": pct(ttft, 50),
             "ttft_p99_s": pct(ttft, 99),
             "kv_blocks_free": cap,
+            "kv_blocks_total": getattr(self.cache, "num_blocks", None),  # paged pool only
             "paged": self.paged,
         }
 
@@ -249,6 +253,7 @@ class ServingEngine:
                 req.first_token_at = time.perf_counter()
                 req.result = generated  # staging area the decode loop appends to
                 req.stream_q.put(first)
+                self.tokens_emitted += 1
                 if self._is_finished(generated, first, req):
                     self._finish(i, generated, req)
                 else:
@@ -278,6 +283,7 @@ class ServingEngine:
                 slot.req.result.append(token)
                 slot.next_token = token
                 slot.req.stream_q.put(token)
+                self.tokens_emitted += 1
                 if self._is_finished(slot.req.result, token, slot.req):
                     self._finish(i, slot.req.result, slot.req)
 

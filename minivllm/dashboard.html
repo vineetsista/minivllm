@@ -3,170 +3,310 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>mini-vLLM</title>
+<title>mini-vLLM · telemetry</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='7' fill='%23ffae3b'/%3E%3C/svg%3E" />
 <style>
-  :root {
-    --bg: #0b0e14; --panel: #131822; --line: #222a39; --fg: #e6e9ef;
-    --muted: #8a94a7; --accent: #5cc8ff; --accent2: #9d8cff; --good: #5ad19a;
+  :root{
+    --bg:#070809; --panel:#0c0e12; --panel2:#10131a;
+    --ink:#ece7da; --dim:#71767f; --faint:#3a3f49;
+    --line:rgba(236,231,218,.08); --line2:rgba(236,231,218,.04);
+    --amber:#ffae3b; --amber-d:#c97c12; --green:#54e6a0; --red:#ff5b50; --steel:#7fa6c4;
+    --display:"Bahnschrift","DIN Alternate","Oswald","Archivo Narrow",system-ui,sans-serif;
+    --mono:"Cascadia Code","JetBrains Mono","SF Mono","Consolas",ui-monospace,monospace;
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  header { padding: 20px 28px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: baseline; gap: 14px; }
-  header h1 { margin: 0; font-size: 20px; letter-spacing: .5px; }
-  header h1 b { color: var(--accent); }
-  header .model { color: var(--muted); }
-  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good);
-    display: inline-block; margin-left: auto; box-shadow: 0 0 10px var(--good); }
-  main { padding: 24px 28px; max-width: 1100px; margin: 0 auto; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 14px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
-  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
-  .card .value { font-size: 26px; margin-top: 6px; font-weight: 600; }
-  .card .value small { font-size: 14px; color: var(--muted); font-weight: 400; }
-  .accent { color: var(--accent); } .accent2 { color: var(--accent2); }
-  section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    padding: 18px; margin-top: 22px; }
-  section.panel h2 { margin: 0 0 12px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
-  canvas { width: 100%; height: 120px; display: block; }
-  textarea { width: 100%; background: #0c1018; color: var(--fg); border: 1px solid var(--line);
-    border-radius: 8px; padding: 10px 12px; font: inherit; resize: vertical; min-height: 64px; }
-  .row { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
-  button { background: var(--accent); color: #04121d; border: 0; border-radius: 8px;
-    padding: 9px 18px; font: inherit; font-weight: 700; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  .out { white-space: pre-wrap; margin-top: 12px; min-height: 40px; padding: 12px;
-    background: #0c1018; border: 1px solid var(--line); border-radius: 8px; }
-  .out .cursor { color: var(--accent); animation: blink 1s steps(1) infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
-  footer { color: var(--muted); text-align: center; padding: 24px; font-size: 12px; }
-  a { color: var(--accent); }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--mono); font-size:13px;
+    /* engineering grid + vignette */
+    background-image:
+      radial-gradient(120% 90% at 50% -10%, rgba(255,174,59,.05), transparent 60%),
+      linear-gradient(var(--line2) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line2) 1px, transparent 1px);
+    background-size:100% 100%, 34px 34px, 34px 34px;
+    background-attachment:fixed;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* faint scanlines */
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9;opacity:.4;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px);}
+  ::selection{background:var(--amber);color:#1a1206;}
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:#1d2129;border:2px solid var(--bg);}
+
+  .topbar{display:flex;align-items:center;gap:18px;padding:14px 22px;
+    border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(7,8,9,.85);
+    backdrop-filter:blur(6px);z-index:10;}
+  .brand{font-family:var(--display);font-size:21px;letter-spacing:2px;font-weight:600;text-transform:uppercase;}
+  .brand .amber{color:var(--amber);}
+  .brand .sub{font-size:11px;letter-spacing:4px;color:var(--dim);margin-left:12px;font-weight:400;}
+  .led{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);
+    box-shadow:0 0 10px var(--green);margin-right:10px;animation:pulse 1.8s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  .topmeta{margin-left:auto;display:flex;gap:26px;color:var(--dim);font-size:11.5px;letter-spacing:.5px;}
+  .topmeta b{color:var(--ink);font-weight:400;}
+  .topmeta .amber{color:var(--amber);}
+
+  main{max-width:1180px;margin:0 auto;padding:24px 22px 40px;display:flex;flex-direction:column;gap:20px;}
+
+  .panel{position:relative;background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--line);padding:16px 18px;opacity:0;transform:translateY(10px);
+    animation:reveal .6s cubic-bezier(.2,.7,.2,1) forwards;}
+  @keyframes reveal{to{opacity:1;transform:none;}}
+  /* viewfinder corner ticks */
+  .panel::before,.panel::after{content:"";position:absolute;width:9px;height:9px;pointer-events:none;}
+  .panel::before{top:-1px;left:-1px;border-top:1px solid var(--amber);border-left:1px solid var(--amber);}
+  .panel::after{bottom:-1px;right:-1px;border-bottom:1px solid var(--amber);border-right:1px solid var(--amber);}
+  .panel-head{display:flex;justify-content:space-between;align-items:baseline;
+    font-family:var(--display);text-transform:uppercase;letter-spacing:3px;font-size:12px;color:var(--ink);
+    padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--line);}
+  .panel-head .unit{color:var(--dim);font-size:11px;letter-spacing:1.5px;font-family:var(--mono);}
+
+  /* scope */
+  .scope-panel{animation-delay:.02s;}
+  .scope-wrap{position:relative;}
+  .scope-readout{position:absolute;top:2px;left:2px;display:flex;align-items:baseline;gap:8px;z-index:2;}
+  .scope-readout b{font-size:46px;font-weight:600;line-height:1;color:var(--amber);
+    text-shadow:0 0 24px rgba(255,174,59,.45);font-variant-numeric:tabular-nums;}
+  .scope-readout i{font-style:normal;color:var(--dim);font-size:13px;letter-spacing:1px;}
+  .scope-readout .live{margin-left:8px;color:var(--green);font-size:10.5px;letter-spacing:2px;
+    align-self:flex-start;margin-top:4px;}
+  .scope-readout .live::before{content:"●  ";animation:pulse 1.4s infinite;}
+  canvas{display:block;width:100%;height:170px;}
+
+  /* metric strip */
+  .metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:0;border:1px solid var(--line);
+    background:var(--panel);opacity:0;transform:translateY(10px);animation:reveal .6s .08s cubic-bezier(.2,.7,.2,1) forwards;}
+  .stat{padding:14px 16px;border-right:1px solid var(--line);}
+  .stat:last-child{border-right:0;}
+  .stat .k{color:var(--dim);font-size:10.5px;letter-spacing:1.6px;text-transform:uppercase;font-family:var(--display);}
+  .stat .v{font-size:25px;margin-top:7px;font-variant-numeric:tabular-nums;letter-spacing:.5px;}
+  .stat .v small{font-size:12px;color:var(--dim);margin-left:3px;}
+  .stat .v.flash{animation:flash .5s ease;}
+  @keyframes flash{0%{color:var(--amber);}100%{color:var(--ink);}}
+
+  .cols{display:grid;grid-template-columns:340px 1fr;gap:20px;}
+  @media(max-width:820px){.cols{grid-template-columns:1fr;}.metrics{grid-template-columns:repeat(3,1fr);}
+    .stat:nth-child(3){border-right:0;}}
+
+  .reactor-panel{animation-delay:.14s;}
+  .reactor{display:flex;gap:8px;height:86px;align-items:flex-end;margin-bottom:6px;}
+  .cell{flex:1;height:100%;background:repeating-linear-gradient(0deg,#15181f 0 6px,#0d0f14 6px 8px);
+    border:1px solid var(--line);position:relative;transition:.35s;}
+  .cell.on{background:linear-gradient(180deg,var(--amber),var(--amber-d));
+    border-color:var(--amber);box-shadow:0 0 16px rgba(255,174,59,.45);}
+  .cell .id{position:absolute;bottom:4px;left:0;right:0;text-align:center;font-size:9px;color:var(--dim);}
+  .cell.on .id{color:#1a1206;}
+  .sub2{margin-top:18px;}
+  .kvgrid{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;}
+  .kv{aspect-ratio:1;background:#15181f;border:1px solid var(--line2);}
+  .kv.used{background:var(--amber);box-shadow:0 0 6px rgba(255,174,59,.5);}
+  .kvnote{color:var(--dim);font-size:11px;margin-top:4px;}
+
+  .console-panel{animation-delay:.2s;display:flex;flex-direction:column;min-height:300px;}
+  .console{flex:1;overflow-y:auto;padding:6px 2px;line-height:1.65;white-space:pre-wrap;
+    word-break:break-word;font-size:13px;max-height:340px;}
+  .console .you{color:var(--steel);}
+  .console .you::before{content:"▸ ";color:var(--amber);}
+  .console .bot{color:var(--ink);}
+  .console .think{color:#828a96;font-style:italic;}
+  .console .cursor{color:var(--amber);animation:blink 1s steps(1) infinite;}
+  @keyframes blink{50%{opacity:0;}}
+  .cmdline{display:flex;align-items:center;gap:10px;border-top:1px solid var(--line);padding-top:12px;margin-top:8px;}
+  .cmdline .prompt{color:var(--amber);font-size:15px;}
+  .cmdline input{flex:1;background:transparent;border:0;color:var(--ink);font:inherit;outline:none;}
+  .cmdline input::placeholder{color:var(--faint);}
+  button{font-family:var(--display);letter-spacing:2px;text-transform:uppercase;font-size:12px;
+    background:var(--amber);color:#1a1206;border:0;padding:8px 18px;cursor:pointer;font-weight:600;
+    box-shadow:0 0 0 1px var(--amber-d) inset;transition:.15s;}
+  button:hover{box-shadow:0 0 18px rgba(255,174,59,.5);}
+  button:disabled{background:#1d2129;color:var(--dim);box-shadow:none;cursor:default;}
+
+  footer{max-width:1180px;margin:0 auto;padding:0 22px 30px;color:var(--dim);font-size:11px;
+    letter-spacing:1px;display:flex;gap:20px;}
+  footer a{color:var(--amber);text-decoration:none;}
+  footer a:hover{text-decoration:underline;}
 </style>
 </head>
 <body>
-<header>
-  <h1><b>mini-vLLM</b> serving dashboard</h1>
-  <span class="model" id="model">loading…</span>
-  <span class="dot" title="live"></span>
-</header>
+<div class="topbar">
+  <div class="brand"><span class="led" id="led"></span>MINI<span class="amber">·</span>VLLM<span class="sub">INFERENCE TELEMETRY</span></div>
+  <div class="topmeta" id="topmeta"><span>booting…</span></div>
+</div>
+
 <main>
-  <div class="grid" id="tiles"></div>
-
-  <section class="panel">
-    <h2>Throughput — tokens / sec (live)</h2>
-    <canvas id="spark" width="1000" height="120"></canvas>
-  </section>
-
-  <section class="panel">
-    <h2>Playground — streamed from /v1/chat/completions</h2>
-    <textarea id="prompt">Explain KV caching in one sentence.</textarea>
-    <div class="row">
-      <button id="send">Send</button>
-      <span class="model">max_tokens 96 · greedy · streaming SSE</span>
+  <section class="panel scope-panel">
+    <div class="panel-head"><span>Throughput</span><span class="unit">TOK · SEC⁻¹</span></div>
+    <div class="scope-wrap">
+      <div class="scope-readout"><b id="tps">0.0</b><i>tok/s</i><span class="live">LIVE</span></div>
+      <canvas id="scope"></canvas>
     </div>
-    <div class="out" id="out"></div>
   </section>
+
+  <div class="metrics" id="metrics">
+    <div class="stat"><div class="k">Lat p50</div><div class="v" id="lat50">—<small>ms</small></div></div>
+    <div class="stat"><div class="k">Lat p99</div><div class="v" id="lat99">—<small>ms</small></div></div>
+    <div class="stat"><div class="k">TTFT p50</div><div class="v" id="ttft">—<small>ms</small></div></div>
+    <div class="stat"><div class="k">Tok / step</div><div class="v" id="tps_step">—</div></div>
+    <div class="stat"><div class="k">Requests</div><div class="v" id="reqs">0</div></div>
+    <div class="stat"><div class="k">Tokens</div><div class="v" id="toks">0</div></div>
+  </div>
+
+  <div class="cols">
+    <section class="panel reactor-panel">
+      <div class="panel-head"><span>Batch Slots</span><span class="unit" id="occ">0 / 0</span></div>
+      <div class="reactor" id="reactor"></div>
+      <div class="panel-head sub2"><span>KV Block Pool</span><span class="unit" id="kvlabel">—</span></div>
+      <div class="kvgrid" id="kvgrid"></div>
+      <div class="kvnote" id="kvnote"></div>
+    </section>
+
+    <section class="panel console-panel">
+      <div class="panel-head"><span>Playground</span><span class="unit">/v1/chat/completions · SSE</span></div>
+      <div class="console" id="console"><span style="color:var(--dim)">▸ awaiting input — stream a completion from the engine.</span></div>
+      <div class="cmdline">
+        <span class="prompt">▸</span>
+        <input id="prompt" value="Explain KV caching in one sentence." autocomplete="off" />
+        <button id="send">Run</button>
+      </div>
+    </section>
+  </div>
 </main>
 <footer>
-  from-scratch inference engine · OpenAI-compatible · <a href="/metrics">/metrics</a> · <a href="/docs">/docs</a>
+  <span>FROM-SCRATCH ENGINE</span><a href="/metrics">/metrics</a><a href="/docs">/docs</a>
+  <a href="https://github.com/vineetsista/minivllm" target="_blank">github</a>
 </footer>
 
 <script>
-const tiles = document.getElementById('tiles');
-const sparkCanvas = document.getElementById('spark');
-const ctx = sparkCanvas.getContext('2d');
-let history = [];           // tokens/sec samples
-let lastTokens = null, lastT = null;
+const $ = id => document.getElementById(id);
+const scope = $('scope'), ctx = scope.getContext('2d');
+let hist = [], lastTok = null, lastT = null, maxSlots = 0;
 
-function tile(label, value, sub, cls) {
-  return `<div class="card"><div class="label">${label}</div>
-    <div class="value ${cls||''}">${value}<small>${sub||''}</small></div></div>`;
+function setVal(el, txt){ if(el.firstChild && el.firstChild.nodeValue !== txt){ el.firstChild.nodeValue = txt; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } }
+
+function buildReactor(n){
+  const r = $('reactor'); r.innerHTML = '';
+  for(let i=0;i<n;i++){ const c=document.createElement('div'); c.className='cell';
+    c.innerHTML=`<span class="id">S${i}</span>`; r.appendChild(c); }
 }
+function buildKv(){ const g=$('kvgrid'); if(g.childElementCount) return;
+  for(let i=0;i<100;i++){ const k=document.createElement('div'); k.className='kv'; g.appendChild(k); } }
 
-async function poll() {
-  try {
-    const [h, m] = await Promise.all([
-      fetch('/health').then(r => r.json()),
-      fetch('/stats').then(r => r.json()),
-    ]);
-    document.getElementById('model').textContent = h.model + (m.paged ? ' · paged KV' : '');
+async function poll(){
+  try{
+    const [h,m] = await Promise.all([fetch('/health').then(r=>r.json()), fetch('/stats').then(r=>r.json())]);
+    $('topmeta').innerHTML =
+      `<span>MODEL <b>${h.model}</b></span><span>MODE <b class="amber">${m.paged?'PAGED KV':'CONTIGUOUS'}</b></span>`+
+      `<span>QUEUE <b>${m.queue_depth}</b></span><span>STEPS <b>${m.decode_steps.toLocaleString()}</b></span>`;
 
-    const now = performance.now() / 1000;
+    if(maxSlots !== m.max_slots){ maxSlots = m.max_slots; buildReactor(maxSlots); }
+    buildKv();
+
+    // throughput from token delta
+    const now = performance.now()/1000;
+    const emitted = m.tokens_emitted ?? m.generated_tokens ?? 0;
     let tps = 0;
-    if (lastTokens !== null) {
-      const dt = now - lastT;
-      if (dt > 0) tps = Math.max(0, (m.generated_tokens - lastTokens) / dt);
+    if(lastTok!==null){ const dt=now-lastT; if(dt>0) tps=Math.max(0,(emitted-lastTok)/dt); }
+    lastTok = emitted; lastT = now;
+    hist.push(tps); if(hist.length>140) hist.shift();
+    $('tps').textContent = tps.toFixed(1);
+    drawScope();
+
+    setVal($('lat50'), (m.latency_p50_s*1000).toFixed(0));
+    setVal($('lat99'), (m.latency_p99_s*1000).toFixed(0));
+    setVal($('ttft'), (m.ttft_p50_s*1000).toFixed(0));
+    setVal($('tps_step'), m.tokens_per_decode_step.toFixed(2));
+    setVal($('reqs'), m.completed_requests.toLocaleString());
+    setVal($('toks'), emitted.toLocaleString());
+
+    // reactor occupancy
+    $('occ').textContent = `${m.active_slots} / ${m.max_slots}`;
+    document.querySelectorAll('.cell').forEach((c,i)=> c.classList.toggle('on', i < m.active_slots));
+
+    // KV pool
+    const cells = document.querySelectorAll('.kv');
+    if(m.kv_blocks_total){
+      const used = m.kv_blocks_total - m.kv_blocks_free;
+      const frac = used / m.kv_blocks_total;
+      const lit = Math.round(frac*cells.length);
+      cells.forEach((k,i)=> k.classList.toggle('used', i<lit));
+      $('kvlabel').textContent = `${(frac*100).toFixed(0)}% USED`;
+      $('kvnote').textContent = `${used.toLocaleString()} / ${m.kv_blocks_total.toLocaleString()} blocks in flight · ${m.kv_blocks_free.toLocaleString()} free`;
+    } else {
+      cells.forEach(k=>k.classList.remove('used'));
+      $('kvlabel').textContent = 'N/A';
+      $('kvnote').textContent = 'contiguous cache — start with MINIVLLM_PAGED=1 to see the paged block pool';
     }
-    lastTokens = m.generated_tokens; lastT = now;
-    history.push(tps); if (history.length > 120) history.shift();
-    drawSpark();
-
-    tiles.innerHTML = [
-      tile('throughput', tps.toFixed(1), ' tok/s', 'accent'),
-      tile('active slots', `${m.active_slots}<small>/${m.max_slots}</small>`, ''),
-      tile('queue depth', m.queue_depth, ''),
-      tile('latency p50', (m.latency_p50_s*1000).toFixed(0), ' ms'),
-      tile('latency p99', (m.latency_p99_s*1000).toFixed(0), ' ms'),
-      tile('TTFT p50', (m.ttft_p50_s*1000).toFixed(0), ' ms'),
-      tile('tok / step', m.tokens_per_decode_step.toFixed(2), '', 'accent2'),
-      tile('completed', m.completed_requests, ' reqs'),
-      tile('generated', m.generated_tokens, ' tok'),
-      m.kv_blocks_free !== null ? tile('KV blocks free', m.kv_blocks_free, ' (pool)') : '',
-    ].join('');
-  } catch (e) { /* server warming up */ }
+    $('led').style.background = h.status==='ok' ? 'var(--green)' : 'var(--amber)';
+  }catch(e){ /* warming up */ }
 }
 
-function drawSpark() {
-  const w = sparkCanvas.width, hgt = sparkCanvas.height;
-  ctx.clearRect(0, 0, w, hgt);
-  if (history.length < 2) return;
-  const max = Math.max(1, ...history);
-  ctx.beginPath();
-  history.forEach((v, i) => {
-    const x = (i / (history.length - 1)) * w;
-    const y = hgt - (v / max) * (hgt - 10) - 5;
-    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  });
-  ctx.strokeStyle = '#5cc8ff'; ctx.lineWidth = 2; ctx.stroke();
-  ctx.lineTo(w, hgt); ctx.lineTo(0, hgt); ctx.closePath();
-  ctx.fillStyle = 'rgba(92,200,255,0.10)'; ctx.fill();
+function drawScope(){
+  const dpr = window.devicePixelRatio||1, W=scope.clientWidth, H=scope.clientHeight;
+  if(scope.width!==W*dpr){ scope.width=W*dpr; scope.height=H*dpr; }
+  ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
+  // grid
+  ctx.strokeStyle='rgba(236,231,218,.05)'; ctx.lineWidth=1;
+  for(let x=0;x<=W;x+=W/12){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for(let y=0;y<=H;y+=H/4){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  if(hist.length<2){ ctx.fillStyle='var(--dim)'; return; }
+  const max = Math.max(1, ...hist) * 1.15;
+  const pt = i => [ (i/(hist.length-1))*W, H - (hist[i]/max)*(H-14) - 7 ];
+  // fill
+  ctx.beginPath(); ctx.moveTo(0,H);
+  hist.forEach((v,i)=>{ const [x,y]=pt(i); ctx.lineTo(x,y); });
+  ctx.lineTo(W,H); ctx.closePath();
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'rgba(255,174,59,.22)'); g.addColorStop(1,'rgba(255,174,59,0)');
+  ctx.fillStyle=g; ctx.fill();
+  // trace
+  ctx.beginPath(); hist.forEach((v,i)=>{ const [x,y]=pt(i); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.strokeStyle='#ffae3b'; ctx.lineWidth=2; ctx.shadowColor='rgba(255,174,59,.7)'; ctx.shadowBlur=10; ctx.stroke();
+  ctx.shadowBlur=0;
+  // head dot
+  const [hx,hy]=pt(hist.length-1);
+  ctx.beginPath(); ctx.arc(hx,hy,3.2,0,7); ctx.fillStyle='#fff'; ctx.fill();
+  ctx.beginPath(); ctx.arc(hx,hy,7,0,7); ctx.strokeStyle='rgba(255,174,59,.6)'; ctx.stroke();
 }
+window.addEventListener('resize', drawScope);
 
-// --- streaming playground via OpenAI-compatible SSE ---
-const out = document.getElementById('out');
-const sendBtn = document.getElementById('send');
-sendBtn.onclick = async () => {
-  const content = document.getElementById('prompt').value;
-  out.innerHTML = '<span class="cursor">▋</span>';
-  sendBtn.disabled = true;
-  let text = '';
-  try {
-    const resp = await fetch('/v1/chat/completions', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ messages: [{role:'user', content}], max_tokens: 96, stream: true }),
-    });
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
+// --- streaming playground (OpenAI-compatible SSE) ---
+const consoleEl = $('console'), sendBtn = $('send'), promptEl = $('prompt');
+async function run(){
+  const content = promptEl.value.trim(); if(!content) return;
+  consoleEl.innerHTML = `<div class="you">${esc(content)}</div><div class="bot" id="stream"></div>`;
+  const out = $('stream'); sendBtn.disabled = true;
+  let text='';
+  try{
+    const resp = await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content}],max_tokens:120,stream:true})});
+    const reader = resp.body.getReader(), dec = new TextDecoder(); let buf='';
+    while(true){
+      const {done,value} = await reader.read(); if(done) break;
+      buf += dec.decode(value,{stream:true});
       const parts = buf.split('\n\n'); buf = parts.pop();
-      for (const p of parts) {
-        const line = p.replace(/^data: /, '').trim();
-        if (!line || line === '[DONE]') continue;
-        const j = JSON.parse(line);
-        const d = j.choices?.[0]?.delta?.content || '';
+      for(const p of parts){
+        const line = p.replace(/^data: /,'').trim();
+        if(!line || line==='[DONE]') continue;
+        const d = JSON.parse(line).choices?.[0]?.delta?.content || '';
         text += d;
-        out.innerHTML = text.replace(/</g,'&lt;') + '<span class="cursor">▋</span>';
+        out.innerHTML = render(text) + '<span class="cursor">▋</span>';
+        consoleEl.scrollTop = consoleEl.scrollHeight;
       }
     }
-    out.textContent = text;
-  } catch (e) { out.textContent = 'error: ' + e; }
+    out.innerHTML = render(text);
+  }catch(e){ out.innerHTML += `<span style="color:var(--red)">  ⚠ ${esc(''+e)}</span>`; }
   sendBtn.disabled = false;
-};
+}
+// render, dimming the model's <think> reasoning
+function render(t){
+  return esc(t)
+    .replace(/&lt;think&gt;/g,'<span class="think">')
+    .replace(/&lt;\/think&gt;/g,'</span>');
+}
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+sendBtn.onclick = run;
+promptEl.addEventListener('keydown', e=>{ if(e.key==='Enter') run(); });
 
 poll(); setInterval(poll, 1000);
 </script>
