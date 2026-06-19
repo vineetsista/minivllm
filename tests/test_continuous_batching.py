@@ -55,12 +55,13 @@ def test_batched_mask_is_per_row():
     cfg = _tiny_cfg()
     cache = BatchedKVCache(cfg, num_slots=2, max_seq_len=5)
     cache.lengths = torch.tensor([0, 2])
-    mask = cache.make_mask(torch.float32)  # [2, 1, 1, 5]
+    mask = cache.make_mask(torch.float32)  # width = max(0,2)+1 = 3 -> [2, 1, 1, 3]
 
+    assert mask.shape == (2, 1, 1, 3)  # attends over active width, not max_seq_len
     finite = torch.isfinite(mask)[:, 0, 0, :]
     # Row 0 may attend only to position 0; row 1 to positions 0..2.
-    assert finite[0].tolist() == [True, False, False, False, False]
-    assert finite[1].tolist() == [True, True, True, False, False]
+    assert finite[0].tolist() == [True, False, False]
+    assert finite[1].tolist() == [True, True, True]
 
 
 # --- slow gate: engine == single-sequence decode --------------------------------

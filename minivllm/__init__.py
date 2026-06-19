@@ -12,6 +12,8 @@ Surface so far:
     a scheduler that keeps the batch full instead of draining it.
   * Phase 7 — speculative decoding: draft + parallel verify with KV rollback,
     exact for greedy.
+  * Phase 8 — a FastAPI serving layer over a threaded streaming engine that keeps
+    the batch full as requests arrive.
 """
 
 from minivllm.cache import KVCache
@@ -34,3 +36,10 @@ __all__ = [
     "SpeculativeDecoder",
     "NgramDrafter",
 ]
+
+
+def serving_app(*args, **kwargs):
+    """Lazily build the FastAPI serving app (imports fastapi only when called)."""
+    from minivllm.server import create_app
+
+    return create_app(*args, **kwargs)

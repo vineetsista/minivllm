@@ -29,6 +29,7 @@ minivllm/
   batched_cache.py# BatchedKVCache: per-slot histories for batched decode
   engine.py       # continuous-batching scheduler (static + continuous policies)
   speculative.py  # speculative decoding: drafter + parallel verify with rollback
+  server.py       # FastAPI serving layer + threaded streaming ServingEngine
   benchmark.py    # TTFT / decode-latency / throughput harness
 scripts/
   validate_logits.py
@@ -37,6 +38,7 @@ scripts/
   paged_demo.py   # CLI: paged vs static KV memory / fragmentation / capacity
   batch_bench.py  # CLI: static vs continuous batching throughput
   spec_bench.py   # CLI: speculative vs greedy (acceptance, target forwards)
+  loadtest.py     # CLI: async concurrent load test against the server
 tests/
   test_logits.py
   test_generation.py
@@ -44,6 +46,7 @@ tests/
   test_paged_cache.py
   test_continuous_batching.py
   test_speculative.py
+  test_server.py
 ```
 
 Design intent: clean separation between **model**, **KV-cache manager**,
@@ -70,7 +73,7 @@ pip install -r requirements.txt
 | 5 | Continuous (iteration-level) batching | ✅ |
 | 6 | Custom Triton kernel | ⏳ (needs GPU) |
 | 7 | Speculative decoding | ✅ |
-| 8 | FastAPI serving + load-test dashboard | ⏳ |
+| 8 | FastAPI serving + load-test dashboard | ✅ |
 
 ## Phase 1 — Correctness
 
@@ -308,3 +311,65 @@ decode is in fact largely *memory-bound* (weights stream from RAM each pass), so
 amortization that makes speculation a latency win on GPU, just smaller. The gain
 is workload-dependent: repetitive/structured text drafts well; novel text accepts
 less and gains less.
+
+## Phase 8 — Serving layer + load test
+
+The offline engine runs a fixed list to completion; a server must keep the batch
+full as requests *arrive*. `server.py` runs `ServingEngine` — a background worker
+thread that owns the model and the batched KV cache and runs the decode loop
+forever, admitting queued requests into free slots every iteration and signalling
+each request's completion. FastAPI handlers `submit` and await that event in a
+threadpool (`asyncio.to_thread`), so the synchronous CPU-bound forward never
+blocks the event loop. The worker is the sole owner of cache/slots, so only the
+waiting queue needs a lock. Per-slot sampling params let requests in one batch
+use different temperatures.
+
+```bash
+python -m uvicorn minivllm.server:app --port 8000   # MINIVLLM_SLOTS, MINIVLLM_MODEL via env
+python -m scripts.loadtest --n 8 --concurrency 4 --max-new-tokens 32
+python -m pytest tests/test_server.py -v
+```
+
+Endpoints: `POST /generate`, `GET /health`, `GET /stats`. `test_server.py`
+submits concurrent requests from multiple threads against a tiny model and checks
+every response equals single-sequence greedy — validating the worker, dynamic
+admission, and completion signalling without a download.
+
+### The win — throughput scales with concurrency
+
+8 requests of 32 tokens, 4 slots, same CPU. Going from serialized to 4-way
+continuous batching:
+
+| Concurrency | Wall (s) | Latency p50 (s) | Throughput (tok/s) |
+|---|---|---|---|
+| 1 (serialized) | 120.65 | 18.01 | 2.12 |
+| **4 (batched)** | **22.17** | **11.05** | **11.55** |
+
+**~5.4× aggregate throughput** — and per-request latency *drops* too (18.0 → 11.0
+s), because batched slots share each decode step's weight load (the memory-bound
+amortization again). One subtlety found here and fixed: the batched cache must
+attend only over the active sequence width, not the full pre-allocated buffer, or
+every step pays attention over `max_seq_len` regardless of real lengths.
+
+## The optimization journey
+
+Every technique, measured on the same CPU dev box (Qwen3-0.6B, float32) against
+the previous stage. Correctness is gated at every step: logits, then greedy
+decode, then each cache/scheduler variant, all match the HuggingFace reference or
+single-sequence decode token-for-token.
+
+| Phase | Technique | Headline result (CPU, Qwen3-0.6B) |
+|---|---|---|
+| 1 | Correct forward pass | logit parity vs HF (max abs diff ~1.7e-5, argmax 100%) |
+| 2 | Naive decode + baseline | ~1.0 tok/s decode; O(n²) latency growth (p99 4727 ms/tok) |
+| 3 | KV cache | **~9×** decode throughput; latency flat (p99 4727 → 252 ms/tok) |
+| 4 | Paged KV cache | **7.8×** less KV memory, **8×** more concurrent seqs (12.9% → 100% util) |
+| 5 | Continuous batching | **~3.5×** throughput vs static (occupancy 1.5 → 3.5 of 4 slots) |
+| 6 | Custom Triton kernel | deferred — requires a CUDA GPU |
+| 7 | Speculative decoding | **~2.8×** wall-clock, 4.3× fewer target forwards (93% acceptance) |
+| 8 | Serving + load test | **~5.4×** throughput at concurrency 4 vs serialized |
+
+> Numbers are CPU reference figures that isolate each *algorithmic* win. The
+> headline GPU throughput / memory figures — and the Phase 6 Triton kernel — come
+> from a rented CUDA box; every technique above is hardware-agnostic and carries
+> over.

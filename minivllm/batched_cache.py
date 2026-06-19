@@ -45,24 +45,35 @@ class BatchedKVCache:
         self.lengths = torch.zeros(num_slots, dtype=torch.long, device=device)
         self._rows = torch.arange(num_slots, device=device)
 
+    def _width(self) -> int:
+        """Active key width this step = longest live history + 1 (the token just
+        written). Decode attends only over this, not the whole buffer — otherwise
+        every step pays attention over max_seq_len regardless of real lengths."""
+        return min(int(self.lengths.max().item()) + 1, self.max_seq_len)
+
     def extend(
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Scatter each slot's new token K/V at its own `lengths` position and
-        return the full per-layer buffers. k, v: [num_slots, n_kv, 1, head_dim].
+        return the per-layer buffers sliced to the active width. k, v:
+        [num_slots, n_kv, 1, head_dim].
 
         Every layer in a step writes at the same `lengths` (advance is deferred
-        to the engine), so the writes stay consistent across the layer loop.
+        to the engine), so the writes — and the width — stay consistent across
+        the layer loop.
         """
         self.k[layer_idx][self._rows, :, self.lengths, :] = k[:, :, 0, :]
         self.v[layer_idx][self._rows, :, self.lengths, :] = v[:, :, 0, :]
-        return self.k[layer_idx], self.v[layer_idx]
+        w = self._width()
+        return self.k[layer_idx][:, :, :w, :], self.v[layer_idx][:, :, :w, :]
 
     def make_mask(self, dtype: torch.dtype) -> torch.Tensor:
-        """Additive attention mask [num_slots, 1, 1, max_len]: row b may attend
-        to key positions 0..lengths[b] (inclusive of the token just written)."""
-        positions = torch.arange(self.max_seq_len, device=self.device)
-        valid = positions[None, :] <= self.lengths[:, None]  # [num_slots, max_len]
+        """Additive attention mask [num_slots, 1, 1, width]: row b may attend to
+        key positions 0..lengths[b] (inclusive of the token just written), masked
+        beyond that. Width matches the sliced buffers returned by `extend`."""
+        w = self._width()
+        positions = torch.arange(w, device=self.device)
+        valid = positions[None, :] <= self.lengths[:, None]  # [num_slots, width]
         mask = torch.zeros_like(valid, dtype=dtype)
         mask.masked_fill_(~valid, float("-inf"))
         return mask[:, None, None, :]
