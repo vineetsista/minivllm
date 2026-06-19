@@ -10,6 +10,8 @@ Surface so far:
     block table, eliminating fragmentation behind the same cache interface.
   * Phase 5 — continuous (iteration-level) batching: a batched-decode cache and
     a scheduler that keeps the batch full instead of draining it.
+  * Phase 7 — speculative decoding: draft + parallel verify with KV rollback,
+    exact for greedy.
 """
 
 from minivllm.cache import KVCache
@@ -17,6 +19,7 @@ from minivllm.config import ModelConfig
 from minivllm.engine import ContinuousBatchingEngine, Request
 from minivllm.generate import GenerationOutput, SamplingParams, generate
 from minivllm.paged_cache import BlockAllocator, PagedKVCache
+from minivllm.speculative import NgramDrafter, SpeculativeDecoder
 
 __all__ = [
     "ModelConfig",
@@ -28,4 +31,6 @@ __all__ = [
     "BlockAllocator",
     "ContinuousBatchingEngine",
     "Request",
+    "SpeculativeDecoder",
+    "NgramDrafter",
 ]

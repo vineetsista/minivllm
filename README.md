@@ -28,6 +28,7 @@ minivllm/
   paged_cache.py  # BlockAllocator + PagedKVCache (PagedAttention-style)
   batched_cache.py# BatchedKVCache: per-slot histories for batched decode
   engine.py       # continuous-batching scheduler (static + continuous policies)
+  speculative.py  # speculative decoding: drafter + parallel verify with rollback
   benchmark.py    # TTFT / decode-latency / throughput harness
 scripts/
   validate_logits.py
@@ -35,12 +36,14 @@ scripts/
   benchmark.py    # CLI: compare decode paths (naive vs cache)
   paged_demo.py   # CLI: paged vs static KV memory / fragmentation / capacity
   batch_bench.py  # CLI: static vs continuous batching throughput
+  spec_bench.py   # CLI: speculative vs greedy (acceptance, target forwards)
 tests/
   test_logits.py
   test_generation.py
   test_kv_cache.py
   test_paged_cache.py
   test_continuous_batching.py
+  test_speculative.py
 ```
 
 Design intent: clean separation between **model**, **KV-cache manager**,
@@ -66,7 +69,7 @@ pip install -r requirements.txt
 | 4 | Paged KV cache (PagedAttention-style) | ✅ |
 | 5 | Continuous (iteration-level) batching | ✅ |
 | 6 | Custom Triton kernel | ⏳ (needs GPU) |
-| 7 | Speculative decoding | ⏳ |
+| 7 | Speculative decoding | ✅ |
 | 8 | FastAPI serving + load-test dashboard | ⏳ |
 
 ## Phase 1 — Correctness
@@ -262,3 +265,46 @@ is occupancy: static averages 1.53 live slots of 4 (three short sequences finish
 and idle while a length-48 sequence drains its group); continuous refills those
 slots instantly and averages 3.54 of 4. The wider the length spread and the more
 requests, the larger the gap.
+
+## Phase 7 — Speculative decoding
+
+A cheap *drafter* proposes K tokens; the target verifies all K in **one** forward
+and accepts the longest prefix it agrees with, plus a free bonus token. For
+greedy decoding this is **exact** — identical output to plain target greedy,
+token-for-token — because an accepted draft token is by definition the target's
+own argmax, and the correction at the first disagreement is the target's argmax
+too. Speculation only changes how many target forwards it takes (`speculative.py`).
+
+The systems-interesting part is the verify-and-rollback: feed `[last, draft…]`
+through the target with the KV cache, compare each position's argmax to the
+draft, then `cache.truncate(...)` away the KV of rejected tokens so the next
+round continues from the accepted prefix. `Drafter` is an interface; the default
+`NgramDrafter` needs no second model (prompt-lookup: propose the continuation of
+the longest recent token n-gram that recurs), and a draft *model* implements the
+same `propose` contract via `ModelDrafter`.
+
+```bash
+python -m scripts.spec_bench --max-new-tokens 64 --k 4
+python -m pytest tests/test_speculative.py -v
+```
+
+`test_speculative.py` proves speculative greedy == single-sequence greedy on a
+tiny random-weight model (across k = 1, 4, 8, so the verify/rollback is exercised
+at every acceptance level) and again on the real model.
+
+### The win
+
+64 tokens, k = 4, on a repetitive prompt (where n-gram drafting lands), same CPU:
+
+| Decoder | Target forwards | Tokens / forward | Wall (s) |
+|---|---|---|---|
+| Greedy | 64 | 1.00 | 11.57 |
+| **Speculative** | **15** | **4.27** | **4.07** |
+
+**93% acceptance**, **4.3× fewer target forwards**, and **~2.8× wall-clock**. The
+wall-clock win cuts against the naive "CPU is compute-bound" expectation: 0.6B
+decode is in fact largely *memory-bound* (weights stream from RAM each pass), so a
+5-token verify forward costs far less than five single-token forwards — the same
+amortization that makes speculation a latency win on GPU, just smaller. The gain
+is workload-dependent: repetitive/structured text drafts well; novel text accepts
+less and gains less.

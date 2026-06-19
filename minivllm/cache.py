@@ -65,3 +65,11 @@ class KVCache:
         """Commit `n` newly written positions. Called once per forward pass,
         after all layers have extended their slice at the current length."""
         self._length += n
+
+    def truncate(self, length: int) -> None:
+        """Roll the cache back to `length` tokens. Used by speculative decoding
+        to discard the KV of rejected draft tokens after a verification forward:
+        the buffer slots stay put and are simply overwritten by the next write."""
+        if not 0 <= length <= self._length:
+            raise ValueError(f"cannot truncate to {length} from length {self._length}")
+        self._length = length
