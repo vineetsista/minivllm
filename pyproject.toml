@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minivllm"
+version = "0.1.0"
+description = "A from-scratch high-performance LLM inference engine (mini-vLLM)"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["minivllm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
