@@ -1,0 +1,14 @@
+services:
+  minivllm:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MINIVLLM_MODEL: Qwen/Qwen3-0.6B
+      MINIVLLM_SLOTS: "4"
+      MINIVLLM_PAGED: "1"
+    volumes:
+      - hf-cache:/cache/hf
+
+volumes:
+  hf-cache:
