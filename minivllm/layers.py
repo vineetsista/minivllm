@@ -20,6 +20,9 @@ class RMSNorm(nn.Module):
     Getting the dtype dance right is what makes logits match bit-for-bit on
     lower-precision runs; on our float32 CPU build it is a no-op but we keep it
     faithful so the code is correct when we move to a GPU + bf16.
+
+    The actual computation is delegated to `kernels.rms_norm`, which uses a fused
+    Triton kernel on CUDA and this exact reference math on CPU (Phase 6).
     """
 
     def __init__(self, hidden_size: int, eps: float):
@@ -28,11 +31,9 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_dtype = x.dtype
-        x = x.to(torch.float32)
-        variance = x.pow(2).mean(-1, keepdim=True)
-        x = x * torch.rsqrt(variance + self.eps)
-        return self.weight * x.to(input_dtype)
+        from minivllm.kernels import rms_norm
+
+        return rms_norm(x, self.weight, self.eps)
 
 
 class RotaryEmbedding(nn.Module):
