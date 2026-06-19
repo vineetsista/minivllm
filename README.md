@@ -30,7 +30,10 @@ client.chat.completions.create(
 Target model: **Qwen/Qwen3-0.6B** (Apache 2.0). Modern transformer stack: RoPE,
 RMSNorm, grouped-query attention with QK-Norm, SwiGLU.
 
-![The optimization journey](docs/assets/journey.png)
+![mini-vLLM live serving dashboard](docs/assets/dashboard.png)
+
+<p align="center"><em>The built-in telemetry dashboard at <code>/</code> — live throughput,
+batch-slot occupancy, paged-KV pool utilization, and a streaming playground.</em></p>
 
 ---
 
@@ -123,6 +126,8 @@ behind the model untouched; RMSNorm delegates to a kernel seam so Triton swaps i
 behind the layers untouched.
 
 ## The optimization journey
+
+![The optimization journey](docs/assets/journey.png)
 
 Every technique, measured on the same CPU dev box (Intel i7-1250U, float32,
 Qwen3-0.6B) against the previous stage. Correctness is gated at every step.
