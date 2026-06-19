@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mini-vLLM</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131822; --line: #222a39; --fg: #e6e9ef;
+    --muted: #8a94a7; --accent: #5cc8ff; --accent2: #9d8cff; --good: #5ad19a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { padding: 20px 28px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; }
+  header h1 { margin: 0; font-size: 20px; letter-spacing: .5px; }
+  header h1 b { color: var(--accent); }
+  header .model { color: var(--muted); }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good);
+    display: inline-block; margin-left: auto; box-shadow: 0 0 10px var(--good); }
+  main { padding: 24px 28px; max-width: 1100px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  .card .value { font-size: 26px; margin-top: 6px; font-weight: 600; }
+  .card .value small { font-size: 14px; color: var(--muted); font-weight: 400; }
+  .accent { color: var(--accent); } .accent2 { color: var(--accent2); }
+  section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px; margin-top: 22px; }
+  section.panel h2 { margin: 0 0 12px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  canvas { width: 100%; height: 120px; display: block; }
+  textarea { width: 100%; background: #0c1018; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; font: inherit; resize: vertical; min-height: 64px; }
+  .row { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+  button { background: var(--accent); color: #04121d; border: 0; border-radius: 8px;
+    padding: 9px 18px; font: inherit; font-weight: 700; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .out { white-space: pre-wrap; margin-top: 12px; min-height: 40px; padding: 12px;
+    background: #0c1018; border: 1px solid var(--line); border-radius: 8px; }
+  .out .cursor { color: var(--accent); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  footer { color: var(--muted); text-align: center; padding: 24px; font-size: 12px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1><b>mini-vLLM</b> serving dashboard</h1>
+  <span class="model" id="model">loading…</span>
+  <span class="dot" title="live"></span>
+</header>
+<main>
+  <div class="grid" id="tiles"></div>
+
+  <section class="panel">
+    <h2>Throughput — tokens / sec (live)</h2>
+    <canvas id="spark" width="1000" height="120"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Playground — streamed from /v1/chat/completions</h2>
+    <textarea id="prompt">Explain KV caching in one sentence.</textarea>
+    <div class="row">
+      <button id="send">Send</button>
+      <span class="model">max_tokens 96 · greedy · streaming SSE</span>
+    </div>
+    <div class="out" id="out"></div>
+  </section>
+</main>
+<footer>
+  from-scratch inference engine · OpenAI-compatible · <a href="/metrics">/metrics</a> · <a href="/docs">/docs</a>
+</footer>
+
+<script>
+const tiles = document.getElementById('tiles');
+const sparkCanvas = document.getElementById('spark');
+const ctx = sparkCanvas.getContext('2d');
+let history = [];           // tokens/sec samples
+let lastTokens = null, lastT = null;
+
+function tile(label, value, sub, cls) {
+  return `<div class="card"><div class="label">${label}</div>
+    <div class="value ${cls||''}">${value}<small>${sub||''}</small></div></div>`;
+}
+
+async function poll() {
+  try {
+    const [h, m] = await Promise.all([
+      fetch('/health').then(r => r.json()),
+      fetch('/stats').then(r => r.json()),
+    ]);
+    document.getElementById('model').textContent = h.model + (m.paged ? ' · paged KV' : '');
+
+    const now = performance.now() / 1000;
+    let tps = 0;
+    if (lastTokens !== null) {
+      const dt = now - lastT;
+      if (dt > 0) tps = Math.max(0, (m.generated_tokens - lastTokens) / dt);
+    }
+    lastTokens = m.generated_tokens; lastT = now;
+    history.push(tps); if (history.length > 120) history.shift();
+    drawSpark();
+
+    tiles.innerHTML = [
+      tile('throughput', tps.toFixed(1), ' tok/s', 'accent'),
+      tile('active slots', `${m.active_slots}<small>/${m.max_slots}</small>`, ''),
+      tile('queue depth', m.queue_depth, ''),
+      tile('latency p50', (m.latency_p50_s*1000).toFixed(0), ' ms'),
+      tile('latency p99', (m.latency_p99_s*1000).toFixed(0), ' ms'),
+      tile('TTFT p50', (m.ttft_p50_s*1000).toFixed(0), ' ms'),
+      tile('tok / step', m.tokens_per_decode_step.toFixed(2), '', 'accent2'),
+      tile('completed', m.completed_requests, ' reqs'),
+      tile('generated', m.generated_tokens, ' tok'),
+      m.kv_blocks_free !== null ? tile('KV blocks free', m.kv_blocks_free, ' (pool)') : '',
+    ].join('');
+  } catch (e) { /* server warming up */ }
+}
+
+function drawSpark() {
+  const w = sparkCanvas.width, hgt = sparkCanvas.height;
+  ctx.clearRect(0, 0, w, hgt);
+  if (history.length < 2) return;
+  const max = Math.max(1, ...history);
+  ctx.beginPath();
+  history.forEach((v, i) => {
+    const x = (i / (history.length - 1)) * w;
+    const y = hgt - (v / max) * (hgt - 10) - 5;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.strokeStyle = '#5cc8ff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.lineTo(w, hgt); ctx.lineTo(0, hgt); ctx.closePath();
+  ctx.fillStyle = 'rgba(92,200,255,0.10)'; ctx.fill();
+}
+
+// --- streaming playground via OpenAI-compatible SSE ---
+const out = document.getElementById('out');
+const sendBtn = document.getElementById('send');
+sendBtn.onclick = async () => {
+  const content = document.getElementById('prompt').value;
+  out.innerHTML = '<span class="cursor">▋</span>';
+  sendBtn.disabled = true;
+  let text = '';
+  try {
+    const resp = await fetch('/v1/chat/completions', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ messages: [{role:'user', content}], max_tokens: 96, stream: true }),
+    });
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        const line = p.replace(/^data: /, '').trim();
+        if (!line || line === '[DONE]') continue;
+        const j = JSON.parse(line);
+        const d = j.choices?.[0]?.delta?.content || '';
+        text += d;
+        out.innerHTML = text.replace(/</g,'&lt;') + '<span class="cursor">▋</span>';
+      }
+    }
+    out.textContent = text;
+  } catch (e) { out.textContent = 'error: ' + e; }
+  sendBtn.disabled = false;
+};
+
+poll(); setInterval(poll, 1000);
+</script>
+</body>
+</html>

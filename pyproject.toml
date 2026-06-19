@@ -41,6 +41,7 @@ dev = [
     "pre-commit>=3.7",
 ]
 plot = ["matplotlib>=3.7"]
+demo = ["openai>=1.0"]  # scripts/openai_client_demo.py (drop-in SDK proof)
 gpu = ["triton>=2.2"]  # Phase 6 custom kernel; CUDA only
 
 [project.urls]
@@ -49,6 +50,9 @@ Repository = "https://github.com/vineetsista/minivllm"
 
 [tool.setuptools]
 packages = ["minivllm"]
+
+[tool.setuptools.package-data]
+minivllm = ["dashboard.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

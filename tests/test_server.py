@@ -83,3 +83,50 @@ def test_serving_engine_concurrent_matches_greedy():
         assert engine.completed == len(specs)
     finally:
         engine.shutdown()
+
+
+def test_streaming_emits_each_token_then_done():
+    """The live token stream must deliver exactly the generated ids in order,
+    terminated by the done sentinel — the basis of SSE streaming."""
+    from minivllm.server import _STREAM_DONE
+
+    model = _tiny_model()
+    engine = ServingEngine(model, max_slots=1, max_seq_len=64, eos_token_id=None)
+    try:
+        expected = _greedy(model, [1, 2, 3], 8)
+        req = engine.submit([1, 2, 3], 8, SamplingParams(max_new_tokens=8, temperature=0.0))
+
+        streamed = []
+        while True:
+            tok = req.stream_q.get(timeout=30.0)
+            if tok is _STREAM_DONE:
+                break
+            streamed.append(tok)
+
+        assert streamed == expected, f"stream {streamed} != result {expected}"
+        assert req.event.is_set()
+        assert req.result == expected
+    finally:
+        engine.shutdown()
+
+
+def test_serving_engine_paged_streams_correctly():
+    """Streaming works the same when the engine is backed by the paged pool."""
+    from minivllm.server import _STREAM_DONE
+
+    model = _tiny_model()
+    engine = ServingEngine(
+        model, max_slots=2, max_seq_len=64, eos_token_id=None, paged=True, block_size=4
+    )
+    try:
+        expected = _greedy(model, [5, 6], 10)
+        req = engine.submit([5, 6], 10, SamplingParams(max_new_tokens=10, temperature=0.0))
+        streamed = []
+        while True:
+            tok = req.stream_q.get(timeout=30.0)
+            if tok is _STREAM_DONE:
+                break
+            streamed.append(tok)
+        assert streamed == expected
+    finally:
+        engine.shutdown()

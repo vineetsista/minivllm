@@ -19,6 +19,7 @@ ids and knows nothing about tokenization — the FastAPI layer owns that.
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from collections import deque
@@ -33,6 +34,9 @@ from minivllm.cache import KVCache
 from minivllm.generate import SamplingParams, _normalize_eos, _select_next_token
 from minivllm.model import Qwen3ForCausalLM
 
+# Sentinel pushed to a request's token stream to mark completion.
+_STREAM_DONE = None
+
 
 # Request/response models live at module scope: with `from __future__ import
 # annotations` the annotations are strings, and FastAPI resolves them against
@@ -45,6 +49,7 @@ class GenerateRequest(BaseModel):
     top_k: int | None = None
     top_p: float | None = None
     seed: int | None = None
+    stream: bool = False
 
 
 class GenerateResponse(BaseModel):
@@ -61,9 +66,13 @@ class _ServeReq:
     max_new_tokens: int
     params: SamplingParams
     event: threading.Event = field(default_factory=threading.Event)
+    # Live token stream: the worker pushes each generated id as it is produced,
+    # then _STREAM_DONE. Endpoints that don't stream just wait on `event`.
+    stream_q: queue.Queue = field(default_factory=queue.Queue)
     result: list[int] | None = None
     error: str | None = None
     queued_at: float = 0.0
+    first_token_at: float = 0.0
 
 
 @dataclass
@@ -108,9 +117,13 @@ class ServingEngine:
         self._cond = threading.Condition()
         self._running = True
         self._next_id = 0
-        # Lightweight stats (worker-only writes except counters under lock).
+        # Metrics (worker writes under the lock; readers snapshot).
         self.completed = 0
         self.generated_tokens = 0
+        self.prompt_tokens = 0
+        self.decode_steps = 0
+        self._recent_latency: deque[float] = deque(maxlen=256)  # end-to-end seconds
+        self._recent_ttft: deque[float] = deque(maxlen=256)  # submit -> first token
 
         self._worker = threading.Thread(target=self._loop, name="minivllm-engine", daemon=True)
         self._worker.start()
@@ -164,10 +177,49 @@ class ServingEngine:
         req.result = generated
         self.cache.release(slot_idx)
         self.slots[slot_idx] = None
+        req.stream_q.put(_STREAM_DONE)
+        now = time.perf_counter()
         with self._cond:
             self.completed += 1
             self.generated_tokens += len(generated)
+            self.prompt_tokens += len(req.prompt_ids)
+            self._recent_latency.append(now - req.queued_at)
+            if req.first_token_at:
+                self._recent_ttft.append(req.first_token_at - req.queued_at)
         req.event.set()
+
+    def metrics(self) -> dict:
+        """Snapshot of serving metrics (thread-safe enough for a dashboard)."""
+        with self._cond:
+            lat = sorted(self._recent_latency)
+            ttft = sorted(self._recent_ttft)
+            completed = self.completed
+            gen = self.generated_tokens
+            prompt = self.prompt_tokens
+            steps = self.decode_steps
+
+        def pct(xs: list[float], q: float) -> float:
+            if not xs:
+                return 0.0
+            return xs[min(len(xs) - 1, int(q / 100 * len(xs)))]
+
+        cap = getattr(self.cache, "num_free", None)  # paged pool only
+        return {
+            "completed_requests": completed,
+            "generated_tokens": gen,
+            "prompt_tokens": prompt,
+            "decode_steps": steps,
+            "tokens_per_decode_step": (gen / steps) if steps else 0.0,
+            "queue_depth": len(self._waiting),
+            "active_slots": sum(s is not None for s in self.slots),
+            "max_slots": self.max_slots,
+            "latency_p50_s": pct(lat, 50),
+            "latency_p99_s": pct(lat, 99),
+            "ttft_p50_s": pct(ttft, 50),
+            "ttft_p99_s": pct(ttft, 99),
+            "kv_blocks_free": cap,
+            "paged": self.paged,
+        }
 
     def _is_finished(self, generated: list[int], next_token: int, req: _ServeReq) -> bool:
         return len(generated) >= req.max_new_tokens or next_token in self.eos
@@ -194,12 +246,13 @@ class ServingEngine:
                     req.event.set()
                     continue
                 generated = [first]
+                req.first_token_at = time.perf_counter()
+                req.result = generated  # staging area the decode loop appends to
+                req.stream_q.put(first)
                 if self._is_finished(generated, first, req):
                     self._finish(i, generated, req)
                 else:
                     self.slots[i] = _Slot(req=req, next_token=first, generator=gen)
-                    # track partial generation on the slot via req.result staging
-                    req.result = generated
 
             active = [(i, s) for i, s in enumerate(self.slots) if s is not None]
             if not active:
@@ -216,22 +269,77 @@ class ServingEngine:
                 input_ids, self.cache.position_ids(), attn_mask, self.cache
             )
             self.cache.advance(active_mask)
+            with self._cond:
+                self.decode_steps += 1
 
             for i, slot in active:
                 token = _select_next_token(logits[i, 0], slot.req.params, slot.generator)
                 assert slot.req.result is not None  # set at admission
                 slot.req.result.append(token)
                 slot.next_token = token
+                slot.req.stream_q.put(token)
                 if self._is_finished(slot.req.result, token, slot.req):
                     self._finish(i, slot.req.result, slot.req)
+
+
+# --- streaming helpers ----------------------------------------------------------
+
+
+async def iter_token_deltas(req: _ServeReq, tok):
+    """Async generator of decoded text deltas as the worker produces tokens.
+
+    Uses incremental detokenization (decode the running id list, emit the new
+    suffix) so multi-token characters and BPE merges render correctly. The
+    blocking queue read is parked off the event loop with asyncio.to_thread.
+    """
+    import asyncio
+
+    ids: list[int] = []
+    prev = ""
+    while True:
+        token = await asyncio.to_thread(req.stream_q.get)
+        if token is _STREAM_DONE:
+            break
+        ids.append(token)
+        full = tok.decode(ids, skip_special_tokens=True)
+        delta = full[len(prev) :]
+        prev = full
+        if delta:
+            yield delta
+
+
+def params_from_request(
+    max_new_tokens: int,
+    temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
+    seed: int | None = None,
+) -> SamplingParams:
+    return SamplingParams(
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        seed=seed,
+    )
 
 
 # --- FastAPI app ----------------------------------------------------------------
 
 
-def create_app(model_id: str = "Qwen/Qwen3-0.6B", max_slots: int = 4, max_seq_len: int = 1024):
+def create_app(
+    model_id: str = "Qwen/Qwen3-0.6B",
+    max_slots: int = 4,
+    max_seq_len: int = 1024,
+    paged: bool = False,
+):
+    import asyncio
+    import json
+    from pathlib import Path
 
     from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 
     state: dict = {}
 
@@ -245,13 +353,26 @@ def create_app(model_id: str = "Qwen/Qwen3-0.6B", max_slots: int = 4, max_seq_le
         tok = AutoTokenizer.from_pretrained(model_id)
         state["tok"] = tok
         state["engine"] = ServingEngine(
-            model, max_slots=max_slots, max_seq_len=max_seq_len, eos_token_id=tok.eos_token_id
+            model,
+            max_slots=max_slots,
+            max_seq_len=max_seq_len,
+            eos_token_id=tok.eos_token_id,
+            paged=paged,
         )
         state["model_id"] = model_id
         yield
         state["engine"].shutdown()
 
     app = FastAPI(title="mini-vLLM", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    )
+
+    def _submit(prompt_ids, params, max_new):
+        try:
+            return state["engine"].submit(prompt_ids, max_new, params)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/health")
     async def health():
@@ -264,44 +385,68 @@ def create_app(model_id: str = "Qwen/Qwen3-0.6B", max_slots: int = 4, max_seq_le
 
     @app.get("/stats")
     async def stats():
-        engine = state["engine"]
-        return {
-            "completed_requests": engine.completed,
-            "generated_tokens": engine.generated_tokens,
-            "queue_depth": len(engine._waiting),
-            "active_slots": sum(s is not None for s in engine.slots),
-        }
+        return state["engine"].metrics()
 
-    @app.post("/generate", response_model=GenerateResponse)
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def metrics():
+        m = state["engine"].metrics()
+        lines = [
+            "# mini-vLLM serving metrics (Prometheus exposition)",
+            f"minivllm_completed_requests_total {m['completed_requests']}",
+            f"minivllm_generated_tokens_total {m['generated_tokens']}",
+            f"minivllm_prompt_tokens_total {m['prompt_tokens']}",
+            f"minivllm_decode_steps_total {m['decode_steps']}",
+            f"minivllm_tokens_per_decode_step {m['tokens_per_decode_step']:.4f}",
+            f"minivllm_queue_depth {m['queue_depth']}",
+            f"minivllm_active_slots {m['active_slots']}",
+            f"minivllm_max_slots {m['max_slots']}",
+            f'minivllm_latency_seconds{{quantile="0.5"}} {m["latency_p50_s"]:.4f}',
+            f'minivllm_latency_seconds{{quantile="0.99"}} {m["latency_p99_s"]:.4f}',
+            f'minivllm_ttft_seconds{{quantile="0.5"}} {m["ttft_p50_s"]:.4f}',
+            f'minivllm_ttft_seconds{{quantile="0.99"}} {m["ttft_p99_s"]:.4f}',
+        ]
+        if m["kv_blocks_free"] is not None:
+            lines.append(f"minivllm_kv_blocks_free {m['kv_blocks_free']}")
+        return "\n".join(lines) + "\n"
+
+    @app.get("/", response_class=HTMLResponse)
+    async def dashboard():
+        html = Path(__file__).parent / "dashboard.html"
+        return html.read_text(encoding="utf-8")
+
+    @app.post("/generate", response_model=None)
     async def generate_endpoint(body: GenerateRequest):
-        import asyncio
-
-        engine, tok = state["engine"], state["tok"]
+        tok = state["tok"]
         prompt_ids = tok(body.prompt, return_tensors="pt").input_ids[0].tolist()
-        params = SamplingParams(
-            max_new_tokens=body.max_new_tokens,
-            temperature=body.temperature,
-            top_k=body.top_k,
-            top_p=body.top_p,
-            seed=body.seed,
+        params = params_from_request(
+            body.max_new_tokens, body.temperature, body.top_k, body.top_p, body.seed
         )
-        try:
-            req = engine.submit(prompt_ids, body.max_new_tokens, params)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        req = _submit(prompt_ids, params, body.max_new_tokens)
+
+        if body.stream:
+
+            async def sse():
+                async for delta in iter_token_deltas(req, tok):
+                    yield f"data: {json.dumps({'text': delta})}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(sse(), media_type="text/event-stream")
 
         t0 = time.perf_counter()
-        await asyncio.to_thread(req.event.wait)  # park the blocking wait off the event loop
+        await asyncio.to_thread(req.event.wait)
         if req.error:
             raise HTTPException(status_code=500, detail=req.error)
-        latency = time.perf_counter() - t0
-
         return GenerateResponse(
             text=tok.decode(req.result, skip_special_tokens=True),
             prompt_tokens=len(prompt_ids),
-            generated_tokens=len(req.result),
-            latency_s=latency,
+            generated_tokens=len(req.result or []),
+            latency_s=time.perf_counter() - t0,
         )
+
+    # OpenAI-compatible /v1 routes (chat/completions, completions, models).
+    from minivllm.openai_api import register_openai_routes
+
+    register_openai_routes(app, state, _submit)
 
     return app
 
@@ -314,6 +459,7 @@ def _app_from_env():
         model_id=os.environ.get("MINIVLLM_MODEL", "Qwen/Qwen3-0.6B"),
         max_slots=int(os.environ.get("MINIVLLM_SLOTS", "4")),
         max_seq_len=int(os.environ.get("MINIVLLM_MAX_SEQ_LEN", "1024")),
+        paged=os.environ.get("MINIVLLM_PAGED", "0") == "1",
     )
 
 
