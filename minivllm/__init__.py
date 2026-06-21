@@ -22,6 +22,7 @@ from minivllm.engine import ContinuousBatchingEngine, Request
 from minivllm.generate import GenerationOutput, SamplingParams, generate
 from minivllm.paged_batched_cache import PagedBatchedKVCache
 from minivllm.paged_cache import BlockAllocator, PagedKVCache
+from minivllm.prefix_cache import RadixPrefixCache, cached_prefill
 from minivllm.quantization import QuantizedLinear, quantize_linears
 from minivllm.speculative import NgramDrafter, SpeculativeDecoder
 
@@ -40,6 +41,8 @@ __all__ = [
     "NgramDrafter",
     "QuantizedLinear",
     "quantize_linears",
+    "RadixPrefixCache",
+    "cached_prefill",
 ]
 
 

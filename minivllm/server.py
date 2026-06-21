@@ -30,9 +30,9 @@ import torch
 from pydantic import BaseModel
 
 from minivllm.batched_cache import BatchedKVCache
-from minivllm.cache import KVCache
 from minivllm.generate import SamplingParams, _normalize_eos, _select_next_token
 from minivllm.model import Qwen3ForCausalLM
+from minivllm.prefix_cache import RadixPrefixCache, cached_prefill
 
 # Sentinel pushed to a request's token stream to mark completion.
 _STREAM_DONE = None
@@ -93,6 +93,8 @@ class ServingEngine:
         paged: bool = False,
         block_size: int = 16,
         num_blocks: int | None = None,
+        prefix_cache: bool = False,
+        prefix_cache_blocks: int = 128,
     ):
         self.model = model
         self.cfg = model.cfg
@@ -101,6 +103,12 @@ class ServingEngine:
         self.device = device
         self.dtype = next(model.parameters()).dtype
         self.eos = _normalize_eos(eos_token_id)
+
+        self.prefix_cache: RadixPrefixCache | None = None
+        if prefix_cache:
+            self.prefix_cache = RadixPrefixCache(
+                self.cfg, block_size, prefix_cache_blocks, device, self.dtype
+            )
 
         self.paged = paged
         if paged:
@@ -162,11 +170,10 @@ class ServingEngine:
 
     @torch.no_grad()
     def _prefill(self, slot_idx: int, req: _ServeReq) -> tuple[int, torch.Generator | None]:
-        tmp = KVCache(
-            self.cfg, max_seq_len=len(req.prompt_ids), device=self.device, dtype=self.dtype
+        # Reuse any cached prompt prefix; tmp holds the full prompt K/V either way.
+        logits, tmp = cached_prefill(
+            self.model, req.prompt_ids, self.prefix_cache, self.device, self.dtype
         )
-        ids = torch.tensor([req.prompt_ids], device=self.device)
-        logits = self.model(ids, cache=tmp)[0, -1]
         self.cache.load_prefill(slot_idx, tmp, len(req.prompt_ids))
         gen = None
         if req.params.seed is not None and not req.params.greedy:
@@ -223,6 +230,16 @@ class ServingEngine:
             "kv_blocks_free": cap,
             "kv_blocks_total": getattr(self.cache, "num_blocks", None),  # paged pool only
             "paged": self.paged,
+            "prefix_cache": self.prefix_cache is not None,
+            **(
+                {
+                    "prefix_hit_rate": self.prefix_cache.hit_rate,
+                    "prefix_tokens_reused": self.prefix_cache.prefix_tokens_reused,
+                    "prefix_cached_blocks": self.prefix_cache.n_blocks,
+                }
+                if self.prefix_cache is not None
+                else {}
+            ),
         }
 
     def _is_finished(self, generated: list[int], next_token: int, req: _ServeReq) -> bool:
@@ -338,6 +355,7 @@ def create_app(
     max_slots: int = 4,
     max_seq_len: int = 1024,
     paged: bool = False,
+    prefix_cache: bool = False,
 ):
     import asyncio
     import json
@@ -364,6 +382,7 @@ def create_app(
             max_seq_len=max_seq_len,
             eos_token_id=tok.eos_token_id,
             paged=paged,
+            prefix_cache=prefix_cache,
         )
         state["model_id"] = model_id
         yield
@@ -392,6 +411,17 @@ def create_app(
     @app.get("/stats")
     async def stats():
         return state["engine"].metrics()
+
+    @app.get("/cache")
+    async def cache_tree():
+        engine, tok = state["engine"], state["tok"]
+        pc = engine.prefix_cache
+        if pc is None:
+            return {"enabled": False, "nodes": [], "stats": {}}
+        nodes = pc.snapshot()
+        for n in nodes:  # decode a short text preview per cached block
+            n["preview"] = tok.decode(n.pop("tokens")[:8], skip_special_tokens=True)[:24]
+        return {"enabled": True, "nodes": nodes, "stats": pc.stats()}
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics():
@@ -466,6 +496,7 @@ def _app_from_env():
         max_slots=int(os.environ.get("MINIVLLM_SLOTS", "4")),
         max_seq_len=int(os.environ.get("MINIVLLM_MAX_SEQ_LEN", "1024")),
         paged=os.environ.get("MINIVLLM_PAGED", "0") == "1",
+        prefix_cache=os.environ.get("MINIVLLM_PREFIX", "0") == "1",
     )
 
 

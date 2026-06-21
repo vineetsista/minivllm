@@ -70,6 +70,20 @@ class KVCache:
         after all layers have extended their slice at the current length."""
         self._length += n
 
+    def preload(
+        self, k_layers: list[torch.Tensor], v_layers: list[torch.Tensor], length: int
+    ) -> None:
+        """Seed the cache with a precomputed prefix of `length` tokens. Used by
+        prefix caching: a matched prefix's K/V is written into positions
+        [0:length] so a forward pass can resume from the suffix. Each entry of
+        k_layers / v_layers is [n_kv_heads, length, head_dim] for that layer."""
+        if length > self.max_seq_len:
+            raise ValueError(f"prefix length {length} exceeds capacity {self.max_seq_len}")
+        for layer in range(len(self.k)):
+            self.k[layer][:, :, :length] = k_layers[layer].unsqueeze(0)
+            self.v[layer][:, :, :length] = v_layers[layer].unsqueeze(0)
+        self._length = length
+
     def truncate(self, length: int) -> None:
         """Roll the cache back to `length` tokens. Used by speculative decoding
         to discard the KV of rejected draft tokens after a verification forward:
