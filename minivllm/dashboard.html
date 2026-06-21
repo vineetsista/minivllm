@@ -121,6 +121,14 @@
     box-shadow:0 0 0 1px var(--amber-d) inset;transition:.15s;}
   button:hover{box-shadow:0 0 18px rgba(255,174,59,.5);}
   button:disabled{background:#1d2129;color:var(--dim);box-shadow:none;cursor:default;}
+  .jsontoggle{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:11px;
+    letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;user-select:none;font-family:var(--display);}
+  .jsontoggle input{accent-color:var(--amber);width:13px;height:13px;}
+  .jsontoggle.on{color:var(--amber);}
+
+  .radix-panel{animation-delay:.26s;}
+  #radix{height:230px;}
+  .radix-empty{color:var(--dim);font-size:12px;padding:30px 0;text-align:center;}
 
   footer{max-width:1180px;margin:0 auto;padding:0 22px 30px;color:var(--dim);font-size:11px;
     letter-spacing:1px;display:flex;gap:20px;}
@@ -167,10 +175,17 @@
       <div class="cmdline">
         <span class="prompt">▸</span>
         <input id="prompt" value="Explain KV caching in one sentence." autocomplete="off" />
+        <label class="jsontoggle" id="jsonlabel"><input type="checkbox" id="jsonmode" /> JSON</label>
         <button id="send">Run</button>
       </div>
     </section>
   </div>
+
+  <section class="panel radix-panel">
+    <div class="panel-head"><span>Prefix Cache · Radix Tree</span><span class="unit" id="radixstat">—</span></div>
+    <canvas id="radix"></canvas>
+    <div class="kvnote" id="radixnote"></div>
+  </section>
 </main>
 <footer>
   <span>FROM-SCRATCH ENGINE</span><a href="/metrics">/metrics</a><a href="/docs">/docs</a>
@@ -180,7 +195,8 @@
 <script>
 const $ = id => document.getElementById(id);
 const scope = $('scope'), ctx = scope.getContext('2d');
-let hist = [], lastTok = null, lastT = null, maxSlots = 0;
+const radix = $('radix'), rctx = radix.getContext('2d');
+let hist = [], lastTok = null, lastT = null, maxSlots = 0, radixNodes = [];
 
 function setVal(el, txt){ if(el.firstChild && el.firstChild.nodeValue !== txt){ el.firstChild.nodeValue = txt; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } }
 
@@ -278,8 +294,9 @@ async function run(){
   const out = $('stream'); sendBtn.disabled = true;
   let text='';
   try{
+    const extra = $('jsonmode').checked ? {response_format:{type:'json_object'}} : {};
     const resp = await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({messages:[{role:'user',content}],max_tokens:120,stream:true})});
+      body:JSON.stringify(Object.assign({messages:[{role:'user',content}],max_tokens:120,stream:true}, extra))});
     const reader = resp.body.getReader(), dec = new TextDecoder(); let buf='';
     while(true){
       const {done,value} = await reader.read(); if(done) break;
@@ -307,8 +324,49 @@ function render(t){
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 sendBtn.onclick = run;
 promptEl.addEventListener('keydown', e=>{ if(e.key==='Enter') run(); });
+const jsonmode = $('jsonmode');
+jsonmode.addEventListener('change', ()=> $('jsonlabel').classList.toggle('on', jsonmode.checked));
 
-poll(); setInterval(poll, 1000);
+// --- prefix-cache radix tree ---
+async function pollCache(){
+  try{
+    const c = await fetch('/cache').then(r=>r.json());
+    if(!c.enabled){ $('radixstat').textContent='disabled'; radixNodes=[];
+      $('radixnote').textContent='prefix caching off — start the server with MINIVLLM_PREFIX=1'; drawTree(); return; }
+    radixNodes = c.nodes; const s=c.stats;
+    $('radixstat').textContent = `${(s.hit_rate*100).toFixed(0)}% HIT · ${s.cached_blocks} BLOCKS`;
+    $('radixnote').textContent = `${s.cached_blocks} cached blocks · ${s.prefix_tokens_reused.toLocaleString()} prefix tokens reused · ${s.evictions} evictions`;
+    drawTree();
+  }catch(e){}
+}
+function drawTree(){
+  const dpr=window.devicePixelRatio||1, W=radix.clientWidth, H=radix.clientHeight;
+  if(radix.width!==W*dpr){ radix.width=W*dpr; radix.height=H*dpr; }
+  rctx.setTransform(dpr,0,0,dpr,0,0); rctx.clearRect(0,0,W,H);
+  if(!radixNodes.length){ rctx.fillStyle='#71767f'; rctx.font='12px ui-monospace,monospace';
+    rctx.fillText('no shared prefixes cached yet — send requests with a common prefix', 14, H/2); return; }
+  const byDepth={}; radixNodes.forEach(n=> (byDepth[n.depth]=byDepth[n.depth]||[]).push(n));
+  const maxD=Math.max(...radixNodes.map(n=>n.depth));
+  const dx=Math.min(170,(W-140)/Math.max(1,maxD)); const pos={0:{x:30,y:H/2}};
+  for(const d in byDepth){ const arr=byDepth[d], dy=H/(arr.length+1);
+    arr.forEach((n,i)=> pos[n.id]={x:30+d*dx,y:dy*(i+1)}); }
+  const maxHits=Math.max(1,...radixNodes.map(n=>n.hits));
+  rctx.strokeStyle='rgba(255,174,59,.22)'; rctx.lineWidth=1.2;
+  radixNodes.forEach(n=>{ const p=pos[n.parent],c=pos[n.id]; if(p&&c){
+    rctx.beginPath(); rctx.moveTo(p.x+6,p.y);
+    rctx.bezierCurveTo((p.x+c.x)/2,p.y,(p.x+c.x)/2,c.y,c.x-6,c.y); rctx.stroke(); } });
+  rctx.fillStyle='#54e6a0'; rctx.beginPath(); rctx.arc(30,H/2,5,0,7); rctx.fill();
+  rctx.font='10px ui-monospace,monospace';
+  radixNodes.forEach(n=>{ const c=pos[n.id]; const hot=n.hits/maxHits;
+    rctx.fillStyle=`rgba(255,174,59,${0.32+0.68*hot})`;
+    rctx.shadowColor='rgba(255,174,59,'+hot+')'; rctx.shadowBlur=9*hot;
+    rctx.beginPath(); rctx.arc(c.x,c.y,4+hot*3,0,7); rctx.fill(); rctx.shadowBlur=0;
+    rctx.fillStyle='#b8bdc7'; rctx.fillText((n.preview||'').slice(0,11).replace(/\n/g,' '), c.x+8, c.y+3);
+  });
+}
+window.addEventListener('resize', ()=>{drawScope();drawTree();});
+
+poll(); pollCache(); setInterval(poll,1000); setInterval(pollCache,1500);
 </script>
 </body>
 </html>
