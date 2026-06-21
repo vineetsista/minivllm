@@ -50,6 +50,8 @@ class GenerateRequest(BaseModel):
     top_p: float | None = None
     seed: int | None = None
     stream: bool = False
+    json_schema: dict | None = None  # constrain output to this JSON schema
+    grammar: str | None = None  # constrain output to this regex
 
 
 class GenerateResponse(BaseModel):
@@ -347,6 +349,43 @@ def params_from_request(
     )
 
 
+def regex_for(json_schema=None, grammar=None, response_format=None) -> str | None:
+    """Resolve a request's structured-output request to a regex (or None)."""
+    from minivllm.constraints import generic_object_regex, json_schema_to_regex
+
+    if grammar:
+        return grammar
+    if json_schema:
+        return json_schema_to_regex(json_schema)
+    if response_format:
+        kind = response_format.get("type")
+        if kind == "json_schema":
+            js = response_format.get("json_schema", {})
+            return json_schema_to_regex(js.get("schema", js))
+        if kind == "json_object":
+            return generic_object_regex()
+    return None
+
+
+def build_constraint(state: dict, regex: str | None):
+    """Compile `regex` into a fresh per-request FSM, reusing the (expensive) vocab
+    trie and per-grammar caches across requests via `state`."""
+    if regex is None:
+        return None
+    from minivllm.constraints import build_vocab, make_grammar_from_regex
+
+    tok = state["tok"]
+    if "vocab" not in state:
+        state["vocab"] = build_vocab(tok)
+    trie, id_to_str = state["vocab"]
+    grammars = state.setdefault("grammars", {})
+    g = grammars.get(regex)
+    if g is None:
+        g = make_grammar_from_regex(regex, trie, id_to_str, tok.eos_token_id)
+        grammars[regex] = g
+    return g.new_fsm()
+
+
 # --- FastAPI app ----------------------------------------------------------------
 
 
@@ -456,6 +495,9 @@ def create_app(
         prompt_ids = tok(body.prompt, return_tensors="pt").input_ids[0].tolist()
         params = params_from_request(
             body.max_new_tokens, body.temperature, body.top_k, body.top_p, body.seed
+        )
+        params.constraint = build_constraint(
+            state, regex_for(json_schema=body.json_schema, grammar=body.grammar)
         )
         req = _submit(prompt_ids, params, body.max_new_tokens)
 

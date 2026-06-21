@@ -13,7 +13,8 @@ cached path will, so Phase 3 becomes a localized change rather than a rewrite.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
@@ -21,6 +22,9 @@ import torch.nn.functional as F
 from minivllm.cache import KVCache
 from minivllm.model import Qwen3ForCausalLM
 from minivllm.paged_cache import PagedKVCache
+
+if TYPE_CHECKING:
+    from minivllm.constraints import ConstraintFSM
 
 
 @dataclass
@@ -32,6 +36,8 @@ class SamplingParams:
     top_k: int | None = None
     top_p: float | None = None
     seed: int | None = None
+    # Per-request structured-decoding FSM; masks logits to grammar-valid tokens.
+    constraint: ConstraintFSM | None = field(default=None, compare=False, repr=False)
 
     @property
     def greedy(self) -> bool:
@@ -70,29 +76,37 @@ def _select_next_token(
     params: SamplingParams,
     generator: torch.Generator | None,
 ) -> int:
-    """Pick the next token id from a [vocab] logit vector."""
+    """Pick the next token id from a [vocab] logit vector.
+
+    If `params.constraint` is set, the logits are first masked to only the tokens
+    the grammar FSM allows, then the FSM is advanced by the chosen token — so the
+    full generated sequence is guaranteed to conform.
+    """
+    if params.constraint is not None:
+        logits = params.constraint.mask_logits(logits)
+
     if params.greedy:
-        return int(logits.argmax(dim=-1).item())
+        token = int(logits.argmax(dim=-1).item())
+    else:
+        logits = logits / params.temperature
+        if params.top_k is not None:
+            k = min(params.top_k, logits.size(-1))
+            kth = torch.topk(logits, k).values[..., -1, None]
+            logits = torch.where(logits < kth, torch.full_like(logits, float("-inf")), logits)
+        if params.top_p is not None:
+            sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+            probs = F.softmax(sorted_logits, dim=-1)
+            cumulative = probs.cumsum(dim=-1)
+            # Keep tokens up to and including the first that crosses top_p.
+            remove = cumulative - probs > params.top_p
+            sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+            logits = torch.full_like(logits, float("-inf")).scatter(-1, sorted_idx, sorted_logits)
+        probs = F.softmax(logits, dim=-1)
+        token = int(torch.multinomial(probs, num_samples=1, generator=generator).item())
 
-    logits = logits / params.temperature
-
-    if params.top_k is not None:
-        k = min(params.top_k, logits.size(-1))
-        kth = torch.topk(logits, k).values[..., -1, None]
-        logits = torch.where(logits < kth, torch.full_like(logits, float("-inf")), logits)
-
-    if params.top_p is not None:
-        sorted_logits, sorted_idx = torch.sort(logits, descending=True)
-        probs = F.softmax(sorted_logits, dim=-1)
-        cumulative = probs.cumsum(dim=-1)
-        # Keep tokens up to and including the first that crosses top_p (shift so
-        # at least one token always survives).
-        remove = cumulative - probs > params.top_p
-        sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
-        logits = torch.full_like(logits, float("-inf")).scatter(-1, sorted_idx, sorted_logits)
-
-    probs = F.softmax(logits, dim=-1)
-    return int(torch.multinomial(probs, num_samples=1, generator=generator).item())
+    if params.constraint is not None:
+        params.constraint.advance(token)
+    return token
 
 
 def _prepare(input_ids, params, device):

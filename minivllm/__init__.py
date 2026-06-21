@@ -18,6 +18,14 @@ Surface so far:
 
 from minivllm.cache import KVCache
 from minivllm.config import ModelConfig
+from minivllm.constraints import (
+    ConstraintFSM,
+    Grammar,
+    build_vocab,
+    json_schema_to_regex,
+    make_grammar_from_regex,
+    make_grammar_from_schema,
+)
 from minivllm.engine import ContinuousBatchingEngine, Request
 from minivllm.generate import GenerationOutput, SamplingParams, generate
 from minivllm.paged_batched_cache import PagedBatchedKVCache
@@ -43,6 +51,12 @@ __all__ = [
     "quantize_linears",
     "RadixPrefixCache",
     "cached_prefill",
+    "ConstraintFSM",
+    "Grammar",
+    "build_vocab",
+    "json_schema_to_regex",
+    "make_grammar_from_regex",
+    "make_grammar_from_schema",
 ]
 
 

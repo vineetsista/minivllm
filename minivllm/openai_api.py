@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from minivllm.server import iter_token_deltas, params_from_request
+from minivllm.server import build_constraint, iter_token_deltas, params_from_request, regex_for
 
 
 class ChatMessage(BaseModel):
@@ -38,6 +38,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: float | None = None
     seed: int | None = None
     stream: bool = False
+    response_format: dict | None = None  # {"type": "json_object"} or "json_schema"
 
 
 class CompletionRequest(BaseModel):
@@ -48,6 +49,7 @@ class CompletionRequest(BaseModel):
     top_p: float | None = None
     seed: int | None = None
     stream: bool = False
+    response_format: dict | None = None
 
 
 def _finish_reason(n_generated: int, max_new: int) -> str:
@@ -82,6 +84,7 @@ def register_openai_routes(app: FastAPI, state: dict, submit) -> None:
         params = params_from_request(
             body.max_tokens, body.temperature, top_p=body.top_p, seed=body.seed
         )
+        params.constraint = build_constraint(state, regex_for(response_format=body.response_format))
         req = submit(prompt_ids, params, body.max_tokens)
         created = int(time.time())
         cid = f"chatcmpl-{req.id}"
@@ -155,6 +158,7 @@ def register_openai_routes(app: FastAPI, state: dict, submit) -> None:
         params = params_from_request(
             body.max_tokens, body.temperature, top_p=body.top_p, seed=body.seed
         )
+        params.constraint = build_constraint(state, regex_for(response_format=body.response_format))
         req = submit(prompt_ids, params, body.max_tokens)
         created = int(time.time())
         cid = f"cmpl-{req.id}"
