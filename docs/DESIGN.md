@@ -107,6 +107,43 @@ int8 weight-only, symmetric per-output-channel: `scale = max|w|/127`,
 magnitude. Tied embeddings (lm_head) are skipped. Lossy by design — 2.24× smaller
 model at logit cosine 0.99943, identical greedy output on the demo prompt.
 
+## RadixAttention prefix caching
+
+Requests routinely share a prompt prefix — a system prompt, a few-shot preamble.
+Recomputing that prefix's KV every time is waste. `prefix_cache.py` keeps a **radix
+tree** keyed by token content at block granularity: each node is one block of
+tokens plus that block's K/V for every layer, and a node's identity is its path
+from the root (so the same block under different prefixes is a different node —
+that *is* prefix matching). On admission a request matches the longest cached
+prefix, the matched K/V is preloaded into its scratch cache, and only the suffix is
+forwarded. The match is collision-safe (token-equality, not just hash), and an LRU
+pass evicts least-recently-used leaves when over capacity.
+
+The load-bearing correctness fact: a suffix-only forward over a preloaded prefix
+yields *identical* logits to a full-prompt forward, because the cached prefix KV
+was produced by an identical-prefix pass — gated token-for-token. This is
+copy-on-hit (the compute/TTFT win, ~3× faster prefill on shared prompts); true
+zero-copy block *sharing* in the decode gather is a further step that needs the
+paged-attention kernel. The dashboard renders the tree live — branches sharing,
+nodes glowing by reuse-heat.
+
+## Constrained / structured decoding
+
+To guarantee valid JSON we mask the logits at the single sampling choke point to
+only the tokens a grammar permits, *before* sampling — so the output can only ever
+conform (`constraints.py`, the Outlines / XGrammar idea from scratch). A regex (or
+a JSON schema compiled to one) becomes an **NFA** via Thompson construction, which
+we simulate lazily (a "config" = the epsilon-closed state set; an on-the-fly DFA).
+A **vocabulary trie** of decoded token strings is built once. The allowed tokens
+for a config = walk the trie and the NFA together — a token is allowed iff its
+character path keeps the NFA non-empty. This is bounded by token length, not the
+151k vocab, and `move()` + per-config allowed sets are memoized (the difference
+between a 2-minute and a sub-second compile). EOS is allowed only in an accepting
+config, so generation can't stop mid-structure and stops as soon as it completes;
+quantifiers in the schema regex are bounded so a greedy model can't emit digits
+forever. Scope: a JSON-sufficient regex subset and flat object schemas — full
+context-free grammars are out of scope.
+
 ## Why these choices read as production infra
 
 - One narrow cache interface (`extend`/`advance`) that four implementations honor,

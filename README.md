@@ -50,6 +50,12 @@ batch-slot occupancy, paged-KV pool utilization, and a streaming playground.</em
   utilization, batch occupancy, plus a streaming playground).
 - **Real systems coherence.** PagedAttention is wired into the live serving
   engine — one shared block pool, per-sequence block tables — not a side demo.
+- **RadixAttention prefix caching.** Shared prompt prefixes are cached in a radix
+  tree and reused across requests — **3× faster prefill** on shared prompts — and
+  the dashboard renders the prefix tree growing and sharing branches *live*.
+- **Constrained decoding.** A from-scratch regex→NFA engine + JSON-schema compiler
+  + vocab-trie∩automaton masking guarantees **100%-valid JSON** (the Outlines /
+  XGrammar idea), surfaced as a one-click "JSON mode" in the playground.
 - **int8 weight quantization** (2.2× smaller) and bf16/fp16 paths.
 - **Engineered like production:** CI (ruff + mypy + tests), an offline-fast test
   tier, typed throughout, MIT-licensed, `pip`-installable, Docker image.
@@ -84,6 +90,26 @@ python -m scripts.bench_all          # regenerate every number below
 python -m pytest                     # fast suite (no downloads); --runslow for HF gates
 ```
 
+Advanced subsystems (see [`docs/DESIGN.md`](docs/DESIGN.md)):
+
+```bash
+python -m scripts.prefix_demo        # RadixAttention prefix caching: 3x faster prefill
+python -m scripts.constrained_demo   # constrained decoding: guaranteed-valid JSON
+# serve with prefix caching on, then watch the radix tree render live at /
+MINIVLLM_PREFIX=1 python -m uvicorn minivllm.server:app --port 8000
+```
+
+Guaranteed-valid JSON via the OpenAI `response_format` (even from a 0.6B model):
+
+```python
+client.chat.completions.create(
+    model="minivllm", messages=[{"role": "user", "content": "a person"}],
+    response_format={"type": "json_schema",
+                     "json_schema": {"schema": {"type": "object", "properties": {
+                         "name": {"type": "string"}, "age": {"type": "integer"}}}}},
+)  # -> always parses
+```
+
 ## Architecture
 
 ```mermaid
@@ -110,6 +136,8 @@ minivllm/
   generate.py               # naive + cached single-sequence decode, sampling
   engine.py                 # continuous-batching scheduler (static vs continuous)
   speculative.py            # speculative decoding (draft + verify + rollback)
+  prefix_cache.py           # RadixAttention prefix caching (radix tree of KV blocks)
+  constraints.py            # constrained decoding (regex→NFA, JSON schema, logit masking)
   server.py                 # streaming ServingEngine + FastAPI + dashboard + metrics
   openai_api.py             # /v1/chat/completions, /v1/completions, /v1/models
   quantization.py           # int8 weight-only quantization

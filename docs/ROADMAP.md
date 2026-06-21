@@ -49,6 +49,18 @@ The drop-in, "wait, this is from scratch?" moment.
   includes the OpenAI-client demo.
 - Dockerfile + compose for the server; `DESIGN.md` writeup of the decisions.
 
+## v3 — Advanced subsystems ✅
+Push the engine into genuinely-novel territory, each subsystem also visualized live.
+- **RadixAttention prefix caching** — radix tree of cached KV blocks, prefix reuse,
+  LRU eviction; ~3× faster prefill on shared prompts; live tree in the dashboard.
+- **Constrained decoding** — regex→NFA + JSON-schema compiler + vocab-trie∩automaton
+  logit masking; guaranteed-valid JSON; a "JSON mode" toggle in the playground.
+- Dashboard bold evolution: the engine renders its own internals (radix tree).
+
 Correctness is non-negotiable at every step: logits match the HuggingFace
-reference, and every cache/scheduler variant matches single-sequence decode
-token-for-token.
+reference, and every cache/scheduler/decoder variant matches single-sequence decode
+token-for-token (constrained decoding being the deliberate exception — it changes
+*which* tokens are legal, not the math).
+
+Future stretch: zero-copy block sharing in a paged-attention kernel, full CFG
+grammars, tree/Medusa speculative decoding, and GPU throughput numbers.
